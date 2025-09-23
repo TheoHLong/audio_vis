@@ -6,14 +6,18 @@ from __future__ import annotations
 import argparse
 import logging
 
-from transformers import AutoModel, AutoProcessor, pipeline
+from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor, pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def fetch_wavlm(model: str) -> None:
     logging.info("Downloading %s …", model)
-    AutoProcessor.from_pretrained(model)
+    try:
+        AutoProcessor.from_pretrained(model)
+    except Exception as proc_exc:
+        logging.warning("AutoProcessor load failed (%s); trying AutoFeatureExtractor", proc_exc)
+        AutoFeatureExtractor.from_pretrained(model)
     AutoModel.from_pretrained(model)
     logging.info("✓ %s ready", model)
 

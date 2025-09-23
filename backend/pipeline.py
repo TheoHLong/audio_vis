@@ -9,7 +9,7 @@ from typing import Deque, Dict, List, Optional
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 
 from .config import PipelineConfig
 from .keywords import KeywordCandidate, KeywordExtractor
@@ -71,9 +71,17 @@ class CometPipeline:
         logger.info("Loading WavLM model '%s' on %s", model_name, self.device)
         try:
             self.processor = AutoProcessor.from_pretrained(model_name)
+        except Exception as proc_exc:
+            logger.warning("AutoProcessor load failed (%s); falling back to AutoFeatureExtractor", proc_exc)
+            try:
+                self.processor = AutoFeatureExtractor.from_pretrained(model_name)
+            except Exception as feat_exc:
+                logger.error("Failed to load processor for '%s': %s", model_name, feat_exc)
+                raise
+        try:
             self.model = AutoModel.from_pretrained(model_name)
-        except Exception as exc:
-            logger.error("Failed to load model '%s': %s", model_name, exc)
+        except Exception as model_exc:
+            logger.error("Failed to load model '%s': %s", model_name, model_exc)
             raise
 
         self.model.to(self.device)
