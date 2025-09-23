@@ -46,6 +46,7 @@ body {
 .control-block {
   display: flex;
   gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 button {
@@ -171,6 +172,14 @@ button:hover {
   text-transform: uppercase;
 }
 
+.emotion-label {
+  margin-top: 0.65rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.03em;
+  color: rgba(191, 219, 254, 0.8);
+  text-transform: uppercase;
+}
+
 .keywords ul {
   list-style: none;
   margin: 0;
@@ -189,10 +198,17 @@ button:hover {
   text-transform: uppercase;
 }
 
-.keywords .hint {
-  margin-top: 0.75rem;
-  font-size: 0.7rem;
-  color: rgba(148, 163, 184, 0.6);
+.transcript-text {
+  min-height: 84px;
+  padding: 0.6rem 0.7rem;
+  border-radius: 16px;
+  background: rgba(30, 64, 175, 0.25);
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  backdrop-filter: blur(10px);
 }
 
 .diagnostics ul {

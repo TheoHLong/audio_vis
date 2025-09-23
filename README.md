@@ -9,9 +9,11 @@ A live "speech-to-visuals" experience inspired by the **WavLM Base (L2/L6/L10)**
 - **Real-time pipeline (<200 ms budget)** – 40 ms windows, 20 ms stride, incremental PCA→2D, EMA smoothing per the implementation notes.
 - **Layer-aware mappings** – L2 drives speaker clusters/colour, L6 forms the comet trajectory, L10 governs semantic intensity and tail transparency.
 - **Energy & prosody cues** – RMS widens the tail, a lightweight YIN pitch estimator brightens the glow, transient surges spawn particle bursts.
-- **Emotion dial** – Heuristic valence/arousal derived from loudness, pitch deviation, and semantic energy.
+- **Emotion dial** – Pretrained SER (speechbrain/emotion-recognition-wav2vec2) blended with RMS/pitch heuristics for steady valence/arousal.
 - **Performance toggle** – Switch between *Analysis* (calm) and *Performance* (amped) render styles; reset tail with one click.
 - **Optional keywords** – If `openai/whisper-tiny.en` is cached locally, floating keyword bubbles appear near the comet head.
+- **Projection switcher** – Toggle between latent PCA trails and interpretable semantic×pitch feature axes directly in the UI.
+- **Live transcript** – Whisper snippets accumulate into a rolling transcript panel beside the comet; falls back gracefully when ASR is unavailable.
 - **Diagnostics panel** – Reassure evaluators with live readiness indicators for projector, speaker clustering, and keyword modules.
 
 ---
@@ -24,6 +26,7 @@ backend/
   main.py             # FastAPI application + websocket
   pipeline.py         # Streaming WavLM feature pipeline → payloads
   projection.py       # Incremental PCA + speaker clustering helpers
+  emotion.py          # Optional SER head + emotion state dataclass
   keywords.py         # Optional Whisper-based keyword extractor
   utils.py            # DSP helpers (RMS, YIN, EMA, rolling stats)
 frontend/
@@ -46,7 +49,7 @@ README.md
 - Microphone access
 - GPU optional (CPU works; expect higher latency)
 
-> **Models:** the backend requires `microsoft/wavlm-base`. Keyword bubbles are enabled when `openai/whisper-tiny.en` is available. The helper script below will download both.
+> **Models:** the backend requires `microsoft/wavlm-base`. Keyword bubbles and transcripts need `openai/whisper-tiny.en`. The optional emotion dial upgrade pulls `speechbrain/emotion-recognition-wav2vec2-large-960h`. The helper script below pre-fetches all three.
 
 ---
 
@@ -58,8 +61,8 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 
 # Optional but recommended: pre-fetch weights while online
-python scripts/download_models.py           # adds WavLM + Whisper to local cache
-python scripts/download_models.py --skip-whisper  # skip keywords if bandwidth-limited
+python scripts/download_models.py           # adds WavLM + Whisper + SER model to cache
+python scripts/download_models.py --skip-whisper --skip-emotion  # lighter download
 ```
 
 If you already have the models cached elsewhere, set `TRANSFORMERS_CACHE` (or symlink the files) before launching the server.
@@ -79,6 +82,7 @@ Then open [http://localhost:8000](http://localhost:8000) in a browser and grant 
 
 - **Start Listening** toggles the microphone stream.
 - **Performance Mode** amplifies line width, glow, and particles for stage demos. Click again to return to Analysis.
+- **Feature Axes / Latent Map** switches between PCA coordinates and interpretable semantic×pitch axes.
 - **Reset Tail** clears accumulated states without restarting the server.
 
 ### Visual encodings
@@ -90,8 +94,10 @@ Then open [http://localhost:8000](http://localhost:8000) in a browser and grant 
 | Pitch | YIN estimate | Glow intensity |
 | Semantic intensity | L10 vector norm | Tail opacity |
 | Prosodic bursts | RMS surges | Particle flares |
-| Emotion | RMS + pitch + L10 norms | Background hue + emotion dial |
+| Emotion | SER model (speechbrain) + heuristic fallback | Background hue, dial, label |
 | Keywords (optional) | Whisper tiny | Floating labels near head |
+| Transcript | Whisper tiny | Rolling text panel |
+| Projection mode | PCA on L6 vs semantic/pitch metrics | Toolbar toggle |
 
 Diagnostics in the sidebar show when the PCA projector, speaker clustering, or keyword probe are ready. Until the warm-up buffers fill (~6 s), those items report “warming”.
 
@@ -102,7 +108,7 @@ Diagnostics in the sidebar show when the PCA projector, speaker clustering, or k
 - **Incremental PCA** – The projector maintains a 32-D latent space before folding down to 2D; it gracefully falls back to raw axes until enough data is seen.
 - **Smoothing** – EMA constants follow the document (τ≈0.25 s). Tail retention is capped at 2.5 s with timestamp-based eviction.
 - **Audio ingestion** – The browser resamples microphone audio to 16 kHz float32 frames and streams them over a websocket. The backend re-frames at 40 ms / 20 ms and pushes batched payloads roughly 6 Hz.
-- **Emotion heuristics** – Valence leans on pitch deviation plus semantic energy; arousal tracks loudness. Treat them as expressive hints rather than ground truth.
+- **Emotion analyser** – A speech emotion recogniser provides label + V/A estimates; when the model is unavailable we fall back to the handcrafted RMS/pitch heuristic.
 - **Keywords** – If Whisper weights are missing, the extractor logs a warning and the UI shows a fallback state with dashes.
 
 ---

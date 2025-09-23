@@ -16,6 +16,7 @@
       <div class="control-block">
         <button id="start-btn" class="primary">Start Listening</button>
         <button id="mode-btn" class="ghost">Performance Mode</button>
+        <button id="projection-btn" class="ghost">Feature Axes</button>
         <button id="reset-btn" class="ghost">Reset Tail</button>
       </div>
     </div>
@@ -37,11 +38,15 @@
             <div class="bar"><div id="arousal-bar"></div></div>
           </div>
           <div class="mode-pill" id="mode-pill">Mode: Analysis</div>
+          <div class="emotion-label" id="emotion-label">Emotion: —</div>
+        </section>
+        <section class="panel transcript">
+          <h2>Transcript</h2>
+          <div id="transcript-text" class="transcript-text">Listening… (enable Whisper for full sentences)</div>
         </section>
         <section class="panel keywords">
           <h2>Keywords</h2>
           <ul id="keyword-list"></ul>
-          <p class="hint">Requires whisper-tiny weights. Falls back to unsupervised mode when unavailable.</p>
         </section>
         <section class="panel diagnostics">
           <h2>Diagnostics</h2>

@@ -22,6 +22,9 @@ class PipelineConfig:
     keyword_window_seconds: float = 0.8
     keyword_stride_seconds: float = 0.4
 
+    emotion_update_seconds: float = 1.2
+    emotion_window_seconds: float = 1.6
+
     @property
     def frame_size(self) -> int:
         return int(self.sample_rate * (self.frame_ms / 1000.0))

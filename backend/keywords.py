@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Deque, List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -28,6 +28,9 @@ class KeywordExtractor:
 
     _buffer: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32), init=False)
     _tokens: List[KeywordCandidate] = field(default_factory=list, init=False)
+    _transcript_history: List[Tuple[float, str]] = field(default_factory=list, init=False)
+    last_transcript: str = field(default="", init=False)
+    _prev_transcript: str = field(default="", init=False)
     _last_emit: float = field(default=0.0, init=False)
     _pipeline: Optional[object] = field(default=None, init=False)
     _ready: bool = field(default=False, init=False)
@@ -52,6 +55,7 @@ class KeywordExtractor:
             logger.warning("Keyword extraction disabled (%s)", exc)
             self._pipeline = None
             self._ready = False
+            self.last_transcript = ""
 
     @property
     def window_size(self) -> int:
@@ -84,6 +88,14 @@ class KeywordExtractor:
             logger.warning("Keyword extraction failed: %s", exc)
             return []
         text = result.get("text", "")
+        cleaned = text.strip()
+        if cleaned and cleaned != self._prev_transcript:
+            self._transcript_history.append((timestamp, cleaned))
+            self._prev_transcript = cleaned
+        cutoff = timestamp - 12.0
+        if cutoff > 0:
+            self._transcript_history = [item for item in self._transcript_history if item[0] >= cutoff]
+        self.last_transcript = " ".join(segment for _, segment in self._transcript_history).strip()
         keywords = self._extract_keywords(text)
         self._last_emit = timestamp
         expires_at = timestamp + 2.0

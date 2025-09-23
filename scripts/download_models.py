@@ -28,6 +28,12 @@ def fetch_whisper(model: str) -> None:
     logging.info("✓ %s ready", model)
 
 
+def fetch_emotion(model: str) -> None:
+    logging.info("Downloading %s …", model)
+    pipeline("audio-classification", model=model, top_k=None)
+    logging.info("✓ %s ready", model)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download models for the comet visualiser")
     parser.add_argument(
@@ -45,11 +51,23 @@ def main() -> None:
         action="store_true",
         help="Skip downloading the Whisper model",
     )
+    parser.add_argument(
+        "--emotion",
+        default="speechbrain/emotion-recognition-wav2vec2-large-960h",
+        help="Optional speech emotion model identifier",
+    )
+    parser.add_argument(
+        "--skip-emotion",
+        action="store_true",
+        help="Skip downloading the emotion model",
+    )
     args = parser.parse_args()
 
     fetch_wavlm(args.wavlm)
     if not args.skip_whisper:
         fetch_whisper(args.whisper)
+    if not args.skip_emotion:
+        fetch_emotion(args.emotion)
 
 
 if __name__ == "__main__":

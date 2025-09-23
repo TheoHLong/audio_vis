@@ -3,16 +3,19 @@ const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('start-btn');
 const modeBtn = document.getElementById('mode-btn');
 const resetBtn = document.getElementById('reset-btn');
+const projectionBtn = document.getElementById('projection-btn');
 const valenceBar = document.getElementById('valence-bar');
 const arousalBar = document.getElementById('arousal-bar');
 const keywordList = document.getElementById('keyword-list');
 const diagnosticsList = document.getElementById('diagnostics');
 const modePill = document.getElementById('mode-pill');
+const transcriptText = document.getElementById('transcript-text');
+const emotionLabel = document.getElementById('emotion-label');
 
 const state = {
   frames: [],
   head: null,
-  emotion: { valence: 0.5, arousal: 0.5 },
+  emotion: { valence: 0.5, arousal: 0.5, label: 'neutral', confidence: 0 },
   keywords: [],
   diagnostics: {},
   mode: 'analysis',
@@ -20,6 +23,8 @@ const state = {
   defaultColor: '#4b5563',
   particles: [],
   connected: false,
+  transcript: '',
+  projectionMode: 'latent',
 };
 
 let ws = null;
@@ -201,6 +206,8 @@ function handleMessage(message) {
     state.frames = [];
     state.head = null;
     state.particles = [];
+    state.transcript = '';
+    updateTranscript();
     return;
   }
   if (data.type === 'frame_batch') {
@@ -210,6 +217,7 @@ function handleMessage(message) {
     state.keywords = data.keywords || [];
     state.diagnostics = data.diagnostics || {};
     state.mode = data.mode || state.mode;
+    state.transcript = typeof data.transcript === 'string' ? data.transcript : state.transcript;
     const particles = data.particles || [];
     particles.forEach((particle) => {
       state.particles.push({
@@ -217,11 +225,15 @@ function handleMessage(message) {
         y: particle.y,
         color: particle.color,
         life: 1.0,
+        semantic: particle.semantic,
+        pitch_norm: particle.pitch_norm,
       });
     });
     updateBars();
     updateKeywords();
     updateDiagnostics();
+    updateTranscript();
+    updateEmotionLabel();
     updateModeUI();
   }
 }
@@ -254,7 +266,8 @@ function updateDiagnostics() {
   const entries = [
     { key: 'projector_ready', label: 'Projection', value: state.diagnostics.projector_ready },
     { key: 'speaker_ready', label: 'Speaker Clusters', value: state.diagnostics.speaker_ready },
-    { key: 'keyword_ready', label: 'Keywords', value: state.diagnostics.keyword_ready },
+    { key: 'keyword_ready', label: 'Whisper', value: state.diagnostics.keyword_ready },
+    { key: 'emotion_ready', label: 'Emotion', value: state.diagnostics.emotion_ready },
   ];
   entries.forEach((entry) => {
     const li = document.createElement('li');
@@ -263,6 +276,35 @@ function updateDiagnostics() {
     li.innerHTML = `<span style="color:${color};font-weight:600">●</span> ${entry.label}: ${status}`;
     diagnosticsList.appendChild(li);
   });
+}
+
+function updateProjectionButton() {
+  const useFeatures = state.projectionMode === 'features';
+  projectionBtn.textContent = useFeatures ? 'Latent Map' : 'Feature Axes';
+  projectionBtn.classList.toggle('primary', useFeatures);
+  projectionBtn.classList.toggle('ghost', !useFeatures);
+}
+
+function updateTranscript() {
+  const ready = Boolean(state.diagnostics && state.diagnostics.keyword_ready);
+  const fallback = ready
+    ? 'Listening…'
+    : 'Listening… (install openai/whisper-tiny.en for transcripts)';
+  const text = state.transcript && state.transcript.trim() ? state.transcript.trim() : fallback;
+  transcriptText.textContent = text;
+}
+
+function updateEmotionLabel() {
+  const emotion = state.emotion || {};
+  const rawLabel = typeof emotion.label === 'string' && emotion.label.length > 0 ? emotion.label : 'unknown';
+  const prettyLabel = rawLabel
+    .split(/\s|_/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+  const confidence = typeof emotion.confidence === 'number' ? Math.round(emotion.confidence * 100) : null;
+  const labelText = confidence ? `${prettyLabel} (${confidence}%)` : prettyLabel;
+  emotionLabel.textContent = `Emotion: ${labelText}`;
 }
 
 function updateModeUI() {
@@ -293,6 +335,11 @@ modeBtn.addEventListener('click', () => {
   ws.send(JSON.stringify({ type: 'mode', mode: nextMode }));
 });
 
+projectionBtn.addEventListener('click', () => {
+  state.projectionMode = state.projectionMode === 'features' ? 'latent' : 'features';
+  updateProjectionButton();
+});
+
 resetBtn.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'reset' }));
@@ -300,6 +347,13 @@ resetBtn.addEventListener('click', () => {
   state.frames = [];
   state.head = null;
   state.particles = [];
+  state.transcript = '';
+  state.emotion = { valence: 0.5, arousal: 0.5, label: 'neutral', confidence: 0 };
+  state.keywords = [];
+  updateBars();
+  updateKeywords();
+  updateTranscript();
+  updateEmotionLabel();
 });
 
 let lastFrame = performance.now();
@@ -335,7 +389,29 @@ function drawScene(dt) {
   const centerX = width / 2;
   const centerY = height / 2;
   const scale = Math.min(width, height) * 0.42;
+  const featureScale = Math.min(width, height) * 0.5;
   const settings = MODE_SETTINGS[state.mode] || MODE_SETTINGS.analysis;
+  const useFeatureProjection = state.projectionMode === 'features';
+
+  const projectFrame = (frame) => {
+    if (!frame) {
+      return { x: centerX, y: centerY };
+    }
+    if (useFeatureProjection) {
+      const semantic = typeof frame.semantic === 'number' ? frame.semantic : 0.5;
+      const pitchNorm = typeof frame.pitch_norm === 'number' ? frame.pitch_norm : 0.5;
+      const px = (semantic * 2 - 1) * 0.9;
+      const py = (pitchNorm * 2 - 1) * 0.9;
+      return {
+        x: centerX + featureScale * px,
+        y: centerY - featureScale * py,
+      };
+    }
+    return {
+      x: centerX + scale * frame.x,
+      y: centerY - scale * frame.y,
+    };
+  };
 
   const frames = state.frames;
   ctx.lineCap = 'round';
@@ -344,13 +420,11 @@ function drawScene(dt) {
   for (let i = 1; i < frames.length; i += 1) {
     const prev = frames[i - 1];
     const curr = frames[i];
-    const x0 = centerX + scale * prev.x;
-    const y0 = centerY - scale * prev.y;
-    const x1 = centerX + scale * curr.x;
-    const y1 = centerY - scale * curr.y;
+    const prevPos = projectFrame(prev);
+    const currPos = projectFrame(curr);
     ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
+    ctx.moveTo(prevPos.x, prevPos.y);
+    ctx.lineTo(currPos.x, currPos.y);
     ctx.lineWidth = Math.max(1.2, curr.width * settings.widthScale);
     ctx.strokeStyle = withAlpha(curr.color, Math.min(curr.alpha * 1.1, 1));
     ctx.shadowBlur = 40 * curr.glow * settings.glowScale;
@@ -365,8 +439,17 @@ function drawScene(dt) {
     const decay = Math.exp(-dt * 2.8);
     particle.life *= decay;
     if (particle.life < 0.05) return;
-    const px = centerX + scale * particle.x;
-    const py = centerY - scale * particle.y;
+    let px;
+    let py;
+    if (useFeatureProjection) {
+      const semantic = typeof particle.semantic === 'number' ? particle.semantic : 0.5;
+      const pitchNorm = typeof particle.pitch_norm === 'number' ? particle.pitch_norm : 0.5;
+      px = centerX + featureScale * ((semantic * 2 - 1) * 0.9);
+      py = centerY - featureScale * ((pitchNorm * 2 - 1) * 0.9);
+    } else {
+      px = centerX + scale * particle.x;
+      py = centerY - scale * particle.y;
+    }
     const radius = 4 + (1 - particle.life) * 12 * settings.pulse;
     ctx.beginPath();
     ctx.fillStyle = withAlpha(particle.color, particle.life);
@@ -378,8 +461,9 @@ function drawScene(dt) {
 
   // Draw head glow
   if (state.head) {
-    const hx = centerX + scale * state.head.x;
-    const hy = centerY - scale * state.head.y;
+    const headPos = projectFrame(state.head);
+    const hx = headPos.x;
+    const hy = headPos.y;
     const radius = 8 + state.head.width * 2.5 * settings.widthScale;
     const headGlow = ctx.createRadialGradient(hx, hy, 0, hx, hy, radius * 2.6);
     headGlow.addColorStop(0, withAlpha(state.head.color, Math.min(0.75 + state.head.glow * 0.3, 1)));
@@ -416,3 +500,6 @@ updateModeUI();
 updateKeywords();
 updateDiagnostics();
 updateBars();
+updateTranscript();
+updateEmotionLabel();
+updateProjectionButton();

@@ -12,6 +12,7 @@ import torch
 from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 
 from .config import PipelineConfig
+from .emotion import EmotionAnalyzer, EmotionState
 from .keywords import KeywordCandidate, KeywordExtractor
 from .projection import IncrementalProjector, SpeakerClusterer
 from .utils import (
@@ -37,6 +38,7 @@ class FrameDescriptor:
     pitch: float
     pitch_norm: float
     semantic_intensity: float
+    semantic_norm: float
     tail_alpha: float
     line_width: float
     glow: float
@@ -44,16 +46,11 @@ class FrameDescriptor:
 
 
 @dataclass
-class EmotionState:
-    valence: float = 0.5
-    arousal: float = 0.5
-
-
-@dataclass
 class Diagnostics:
     projector_ready: bool
     speaker_ready: bool
     keyword_ready: bool
+    emotion_ready: bool
 
 
 class CometPipeline:
@@ -99,6 +96,11 @@ class CometPipeline:
             sample_rate=self.config.sample_rate,
             window_seconds=self.config.keyword_window_seconds,
             stride_seconds=self.config.keyword_stride_seconds,
+        )
+        self.emotion_analyzer = EmotionAnalyzer(
+            sample_rate=self.config.sample_rate,
+            window_seconds=self.config.emotion_window_seconds,
+            update_seconds=self.config.emotion_update_seconds,
         )
         self.keywords_cache: List[KeywordCandidate] = []
 
@@ -232,8 +234,6 @@ class CometPipeline:
             # keep keywords for later payload building
             self.keywords_cache = keywords
 
-        self._update_emotion(rms_norm, pitch_norm, semantic_norm)
-
         descriptor = FrameDescriptor(
             index=self.frame_index,
             timestamp=timestamp,
@@ -244,11 +244,16 @@ class CometPipeline:
             pitch=pitch_value,
             pitch_norm=pitch_norm,
             semantic_intensity=semantic_intensity,
+            semantic_norm=semantic_norm,
             tail_alpha=tail_alpha,
             line_width=line_width,
             glow=glow,
             particle=particle,
         )
+
+        heuristic = self._heuristic_emotion(rms_norm, pitch_norm, semantic_norm)
+        self.current_emotion = self.emotion_analyzer.update(frame, timestamp, heuristic)
+
         return descriptor
 
     # ------------------------------------------------------------------
@@ -268,11 +273,12 @@ class CometPipeline:
         return self.speaker_colors[speaker]
 
     # ------------------------------------------------------------------
-    def _update_emotion(self, rms_norm: float, pitch_norm: float, semantic_norm: float) -> None:
-        baseline = 0.5
-        arousal = softclip(0.4 + rms_norm * 0.6, 0.0, 1.0)
-        valence = softclip(0.45 + (pitch_norm - 0.5) * 0.3 + (semantic_norm - 0.5) * 0.2, 0.0, 1.0)
-        self.current_emotion = EmotionState(valence=valence, arousal=arousal)
+    def _heuristic_emotion(self, rms_norm: float, pitch_norm: float, semantic_norm: float) -> EmotionState:
+        arousal = softclip(0.35 + rms_norm * 0.65, 0.0, 1.0)
+        valence = softclip(0.45 + (pitch_norm - 0.5) * 0.3 + (semantic_norm - 0.5) * 0.25, 0.0, 1.0)
+        label = "heuristic"
+        confidence = 0.15 + abs(valence - 0.5) * 0.3 + abs(arousal - 0.5) * 0.3
+        return EmotionState(valence=valence, arousal=arousal, label=label, confidence=confidence)
 
     # ------------------------------------------------------------------
     def _build_payload(self, now_ts: float) -> dict:
@@ -291,6 +297,8 @@ class CometPipeline:
                 "glow": round(frame.glow, 3),
                 "rms": round(frame.rms_norm, 3),
                 "pitch": round(frame.pitch, 2),
+                "pitch_norm": round(frame.pitch_norm, 3),
+                "semantic": round(frame.semantic_norm, 3),
             }
             frames_payload.append(payload)
             if frame.particle:
@@ -300,11 +308,17 @@ class CometPipeline:
                     "x": payload["x"],
                     "y": payload["y"],
                     "color": payload["color"],
+                    "semantic": payload["semantic"],
+                    "pitch_norm": payload["pitch_norm"],
                 })
 
         head = frames_payload[-1] if frames_payload else None
         self.keywords_cache = [token for token in self.keywords_cache if token.expires_at > now_ts]
         keywords = self.keywords_cache
+        if self.keyword_extractor._ready:
+            transcript = self.keyword_extractor.last_transcript
+        else:
+            transcript = " ".join(token.text for token in keywords)
         keywords_payload = [
             {
                 "text": token.text,
@@ -319,6 +333,7 @@ class CometPipeline:
             projector_ready=self.projector._display_ready,
             speaker_ready=self.speaker_clusterer.is_ready,
             keyword_ready=self.keyword_extractor._ready,
+            emotion_ready=self.emotion_analyzer.is_ready,
         )
 
         payload = {
@@ -328,9 +343,12 @@ class CometPipeline:
             "head": head,
             "particles": particles,
             "keywords": keywords_payload,
+            "transcript": transcript,
             "emotion": {
                 "valence": round(self.current_emotion.valence, 3),
                 "arousal": round(self.current_emotion.arousal, 3),
+                "label": self.current_emotion.label,
+                "confidence": round(self.current_emotion.confidence, 3),
             },
             "diagnostics": diagnostics.__dict__,
             "mode": self.mode,
@@ -367,3 +385,9 @@ class CometPipeline:
         if hasattr(self.keyword_extractor, "_buffer"):
             self.keyword_extractor._buffer = np.zeros(0, dtype=np.float32)
             self.keyword_extractor._tokens = []
+            if hasattr(self.keyword_extractor, "_transcript_history"):
+                self.keyword_extractor._transcript_history = []
+                self.keyword_extractor.last_transcript = ""
+                self.keyword_extractor._prev_transcript = ""
+        if hasattr(self.emotion_analyzer, "reset"):
+            self.emotion_analyzer.reset()
