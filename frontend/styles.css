@@ -1,0 +1,244 @@
+:root {
+  color-scheme: dark;
+  font-family: "Inter", "SF Pro Display", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: #05070d;
+  color: #f5f7fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 20%, rgba(63, 99, 221, 0.14), rgba(6, 11, 25, 0.94));
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.title-block h1 {
+  margin: 0;
+  font-size: 2.1rem;
+  letter-spacing: 0.02em;
+}
+
+.title-block p {
+  margin: 0.25rem 0 0;
+  color: rgba(245, 247, 250, 0.72);
+}
+
+.control-block {
+  display: flex;
+  gap: 0.75rem;
+}
+
+button {
+  border: none;
+  border-radius: 999px;
+  padding: 0.6rem 1.4rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+button.primary {
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  box-shadow: 0 10px 30px rgba(59, 130, 246, 0.35);
+}
+
+button.ghost {
+  background: rgba(148, 163, 184, 0.15);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 32px rgba(37, 99, 235, 0.2);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.5rem;
+}
+
+.visual-wrap {
+  position: relative;
+  border-radius: 28px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(8, 16, 32, 0.65), rgba(3, 8, 17, 0.95));
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  box-shadow: inset 0 0 50px rgba(15, 23, 42, 0.7), 0 40px 80px rgba(2, 6, 23, 0.45);
+}
+
+#comet-canvas {
+  width: 100%;
+  height: 600px;
+  display: block;
+}
+
+#canvas-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at center, rgba(96, 165, 250, 0.05), transparent 65%);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.panel {
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 20px;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid rgba(94, 234, 212, 0.08);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 25px 45px rgba(2, 6, 23, 0.3);
+}
+
+.panel h2 {
+  margin: 0 0 0.8rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(165, 243, 252, 0.9);
+}
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+}
+
+.meter span {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: rgba(191, 219, 254, 0.75);
+}
+
+.meter .bar {
+  position: relative;
+  width: 100%;
+  height: 10px;
+  background: rgba(30, 64, 175, 0.3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.meter .bar > div {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.9), rgba(192, 132, 252, 0.9));
+  transition: transform 0.2s ease;
+  transform: scaleX(0.5);
+}
+
+.mode-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.15);
+  color: rgba(191, 219, 254, 0.75);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.keywords ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.keywords li {
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(30, 64, 175, 0.4);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.keywords .hint {
+  margin-top: 0.75rem;
+  font-size: 0.7rem;
+  color: rgba(148, 163, 184, 0.6);
+}
+
+.diagnostics ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.diagnostics li {
+  font-size: 0.8rem;
+  color: rgba(203, 213, 225, 0.8);
+}
+
+@media (max-width: 1024px) {
+  #app {
+    padding: 1.2rem;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .panel {
+    flex: 1 1 240px;
+  }
+}
+
+@media (max-width: 720px) {
+  .top-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .control-block {
+    flex-wrap: wrap;
+  }
+
+  #comet-canvas {
+    height: 400px;
+  }
+}

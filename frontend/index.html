@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speech → Visual Comet</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="top-bar">
+      <div class="title-block">
+        <h1>Speech → Visual Comet</h1>
+        <p>WavLM L2/L6/L10 in real-time: see timbre, rhythm, and semantics bloom.</p>
+      </div>
+      <div class="control-block">
+        <button id="start-btn" class="primary">Start Listening</button>
+        <button id="mode-btn" class="ghost">Performance Mode</button>
+        <button id="reset-btn" class="ghost">Reset Tail</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="visual-wrap">
+        <canvas id="comet-canvas"></canvas>
+        <div id="canvas-overlay"></div>
+      </div>
+      <aside class="sidebar">
+        <section class="panel emotion">
+          <h2>Emotion Dial</h2>
+          <div class="meter">
+            <span>Valence</span>
+            <div class="bar"><div id="valence-bar"></div></div>
+          </div>
+          <div class="meter">
+            <span>Arousal</span>
+            <div class="bar"><div id="arousal-bar"></div></div>
+          </div>
+          <div class="mode-pill" id="mode-pill">Mode: Analysis</div>
+        </section>
+        <section class="panel keywords">
+          <h2>Keywords</h2>
+          <ul id="keyword-list"></ul>
+          <p class="hint">Requires whisper-tiny weights. Falls back to unsupervised mode when unavailable.</p>
+        </section>
+        <section class="panel diagnostics">
+          <h2>Diagnostics</h2>
+          <ul id="diagnostics"></ul>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/static/main.js" type="module"></script>
+</body>
+</html>
