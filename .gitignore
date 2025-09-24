@@ -1,0 +1,4 @@
+scripts/.DS_Store
+*.wav
+*.pyc
+data/librispeech/manifest.csv

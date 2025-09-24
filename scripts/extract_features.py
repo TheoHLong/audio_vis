@@ -34,7 +34,7 @@ import librosa
 import numpy as np
 import torch
 from tqdm import tqdm
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("extract_features")
@@ -112,7 +112,11 @@ def process_manifest(
 
     chosen_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     logger.info("Loading WavLM '%s' on %s", model_name, chosen_device)
-    processor = AutoProcessor.from_pretrained(model_name)
+    try:
+        processor = AutoProcessor.from_pretrained(model_name)
+    except Exception as proc_exc:
+        logger.warning("AutoProcessor load failed (%s); falling back to AutoFeatureExtractor", proc_exc)
+        processor = AutoFeatureExtractor.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name).to(chosen_device)
     model.eval()
     torch.set_grad_enabled(False)
