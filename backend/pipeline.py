@@ -44,6 +44,7 @@ class FrameDescriptor:
     line_width: float
     glow: float
     particle: bool
+    acoustic_signature: np.ndarray
 
 
 @dataclass
@@ -222,6 +223,8 @@ class CometPipeline:
             self.l6_tracker.min(),
             self.l6_tracker.max() + 1e-6,
         )
+        l2_norm = np.linalg.norm(l2_vec) + 1e-6
+        acoustic_signature = (l2_vec / l2_norm)[:8].astype(np.float32)
 
         if self.semantic_projector is not None:
             projected = self.semantic_projector.transform(l10_vec)
@@ -279,6 +282,7 @@ class CometPipeline:
             line_width=line_width,
             glow=glow,
             particle=particle,
+            acoustic_signature=acoustic_signature,
         )
 
         self._maybe_add_star(descriptor)
@@ -315,6 +319,8 @@ class CometPipeline:
             "color": color,
             "theme": theme,
             "emotion_level": round(descriptor.emotion_level, 3),
+            "speaker": descriptor.speaker,
+            "acoustic": descriptor.acoustic_signature.tolist(),
         }
         self.stars.append(star)
         self.last_star_timestamp = descriptor.timestamp
@@ -343,9 +349,9 @@ class CometPipeline:
     # ------------------------------------------------------------------
     def _color_from_emotion_level(self, level: float) -> str:
         lvl = softclip(level, 0.0, 1.0)
-        calm = np.array([96, 165, 250])
-        mid = np.array([255, 209, 102])
-        intense = np.array([255, 99, 71])
+        calm = np.array([88, 162, 255])
+        mid = np.array([255, 205, 102])
+        intense = np.array([255, 80, 80])
         if lvl < 0.5:
             alpha = lvl / 0.5
             rgb = (1 - alpha) * calm + alpha * mid
@@ -354,14 +360,6 @@ class CometPipeline:
             rgb = (1 - alpha) * mid + alpha * intense
         rgb = np.clip(rgb, 0, 255).astype(int)
         return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-
-    # ------------------------------------------------------------------
-    def _heuristic_emotion(self, rms_norm: float, pitch_norm: float, semantic_norm: float) -> EmotionState:
-        arousal = softclip(0.35 + rms_norm * 0.65, 0.0, 1.0)
-        valence = softclip(0.45 + (pitch_norm - 0.5) * 0.3 + (semantic_norm - 0.5) * 0.25, 0.0, 1.0)
-        label = "heuristic"
-        confidence = 0.15 + abs(valence - 0.5) * 0.3 + abs(arousal - 0.5) * 0.3
-        return EmotionState(valence=valence, arousal=arousal, label=label, confidence=confidence)
 
     # ------------------------------------------------------------------
     def _build_payload(self, now_ts: float) -> dict:
@@ -443,7 +441,6 @@ class CometPipeline:
         self.rms_tracker.reset()
         self.pitch_tracker.reset()
         self.semantic_tracker.reset()
-        self.current_emotion = EmotionState()
         self.keywords_cache.clear()
         if hasattr(self.keyword_extractor, "_buffer"):
             self.keyword_extractor._buffer = np.zeros(0, dtype=np.float32)
@@ -461,25 +458,47 @@ class CometPipeline:
         if len(stars) < 2:
             return []
         recent = stars[-60:]
-        positions = np.array([[s["x"], s["y"]] for s in recent], dtype=np.float32)
-        max_dist = np.linalg.norm(np.max(positions, axis=0) - np.min(positions, axis=0)) + 1e-6
+        signatures = []
+        for star in recent:
+            sig = np.asarray(star.get("acoustic"), dtype=np.float32)
+            if sig.size == 0:
+                sig = None
+            signatures.append(sig)
+
         connections = []
         added = set()
         for idx, star in enumerate(recent):
-            dists = np.linalg.norm(positions - positions[idx], axis=1)
-            order = np.argsort(dists)
-            neighbors = [o for o in order if o != idx][:2]
-            for nb in neighbors:
+            sig_i = signatures[idx]
+            if sig_i is None:
+                continue
+            sims: list[tuple[int, float]] = []
+            norm_i = float(np.linalg.norm(sig_i)) + 1e-8
+            for jdx, other in enumerate(recent):
+                if idx == jdx:
+                    continue
+                sig_j = signatures[jdx]
+                if sig_j is None:
+                    continue
+                dot = float(np.dot(sig_i, sig_j))
+                norm_j = float(np.linalg.norm(sig_j)) + 1e-8
+                sim = dot / (norm_i * norm_j)
+                if star.get("speaker") is not None and star.get("speaker") == other.get("speaker"):
+                    sim += 0.2
+                sims.append((jdx, sim))
+            sims.sort(key=lambda item: item[1], reverse=True)
+            for jdx, sim in sims[:2]:
+                if sim <= 0:
+                    continue
                 a = star["id"]
-                b = recent[nb]["id"]
+                b = recent[jdx]["id"]
                 key = tuple(sorted((a, b)))
                 if key in added:
                     continue
-                strength = 1.0 - float(min(dists[nb] / max_dist, 1.0))
+                strength = softclip((sim + 1) / 2, 0.0, 1.0)
                 connections.append({
                     "source": a,
                     "target": b,
-                    "strength": round(softclip(strength, 0.0, 1.0), 3),
+                    "strength": round(strength, 3),
                 })
                 added.add(key)
         return connections
