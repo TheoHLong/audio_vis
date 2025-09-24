@@ -324,7 +324,6 @@ function drawScene(timeSeconds, dt) {
   });
 
   if (state.drawLinks) {
-    ctx.lineWidth = 1;
     ctx.lineCap = 'round';
     state.connections.forEach((edge) => {
       const from = positions.get(edge.source);
@@ -332,13 +331,21 @@ function drawScene(timeSeconds, dt) {
       if (!from || !to) {
         return;
       }
-      const alpha = Math.max(0.05, Math.min(0.8, edge.strength));
+      const alpha = Math.max(0.05, Math.min(0.85, edge.strength ?? 0.5));
+      const width = edge.width ?? 1.2;
       ctx.strokeStyle = `rgba(148, 197, 255, ${alpha})`;
+      ctx.lineWidth = width;
+      if (edge.style === 'dashed') {
+        ctx.setLineDash([6, 6]);
+      } else {
+        ctx.setLineDash([]);
+      }
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
       ctx.lineTo(to.x, to.y);
       ctx.stroke();
     });
+    ctx.setLineDash([]);
   }
 
   state.stars.forEach((star) => {
@@ -346,8 +353,10 @@ function drawScene(timeSeconds, dt) {
     if (!pos) {
       return;
     }
-    const baseRadius = 4 + star.semantic * 10;
-    const twinkle = 0.6 + Math.sin(timeSeconds * 4 + star.id) * 0.4 * star.twinkle;
+    const baseRadius = 4 + (star.semantic ?? 0.5) * 10;
+    const pulseRate = star.pulse_rate ?? 1.2;
+    const twinkleAmp = star.twinkle ?? 0.5;
+    const twinkle = 0.7 + Math.sin(timeSeconds * pulseRate + star.id) * 0.3 * twinkleAmp;
     const radius = baseRadius * twinkle;
 
     const brightness = Math.max(0.3, star.brightness);

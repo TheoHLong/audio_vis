@@ -45,6 +45,7 @@ class FrameDescriptor:
     glow: float
     particle: bool
     acoustic_signature: np.ndarray
+    semantic_vector: np.ndarray
 
 
 @dataclass
@@ -225,6 +226,7 @@ class CometPipeline:
         )
         l2_norm = np.linalg.norm(l2_vec) + 1e-6
         acoustic_signature = (l2_vec / l2_norm)[:8].astype(np.float32)
+        semantic_vector = l10_vec[:24].astype(np.float32)
 
         if self.semantic_projector is not None:
             projected = self.semantic_projector.transform(l10_vec)
@@ -283,6 +285,7 @@ class CometPipeline:
             glow=glow,
             particle=particle,
             acoustic_signature=acoustic_signature,
+            semantic_vector=semantic_vector,
         )
 
         self._maybe_add_star(descriptor)
@@ -306,21 +309,25 @@ class CometPipeline:
         if self.keywords_cache:
             theme = self.keywords_cache[-1].text
 
-        color = self._color_from_emotion_level(descriptor.emotion_level)
-        brightness = round(0.55 + descriptor.semantic_norm * 0.35, 4)
+        color = self._color_for_speaker(descriptor.speaker)
+        brightness = round(0.45 + descriptor.semantic_norm * 0.4, 4)
+        pulse_rate = round(0.8 + descriptor.emotion_level * 1.8, 3)
+        twinkle_amp = round(0.4 + descriptor.emotion_level * 0.6, 3)
         star = {
             "id": int(descriptor.index),
             "t": round(descriptor.timestamp, 3),
             "x": round(float(descriptor.xy[0]), 4),
             "y": round(float(descriptor.xy[1]), 4),
             "brightness": brightness,
-            "twinkle": round(softclip(descriptor.pitch_norm, 0.0, 1.0), 4),
+            "twinkle": twinkle_amp,
+            "pulse_rate": pulse_rate,
             "semantic": round(softclip(descriptor.semantic_norm, 0.0, 1.0), 4),
             "color": color,
             "theme": theme,
             "emotion_level": round(descriptor.emotion_level, 3),
             "speaker": descriptor.speaker,
             "acoustic": descriptor.acoustic_signature.tolist(),
+            "semantic_vec": descriptor.semantic_vector.tolist(),
         }
         self.stars.append(star)
         self.last_star_timestamp = descriptor.timestamp
@@ -458,47 +465,56 @@ class CometPipeline:
         if len(stars) < 2:
             return []
         recent = stars[-60:]
-        signatures = []
+        acoustic_vecs: List[Optional[np.ndarray]] = []
+        semantic_vecs: List[Optional[np.ndarray]] = []
         for star in recent:
-            sig = np.asarray(star.get("acoustic"), dtype=np.float32)
-            if sig.size == 0:
-                sig = None
-            signatures.append(sig)
+            a_sig = np.asarray(star.get("acoustic"), dtype=np.float32)
+            s_sig = np.asarray(star.get("semantic_vec"), dtype=np.float32)
+            acoustic_vecs.append(a_sig if a_sig.size else None)
+            semantic_vecs.append(s_sig if s_sig.size else None)
 
         connections = []
         added = set()
         for idx, star in enumerate(recent):
-            sig_i = signatures[idx]
-            if sig_i is None:
+            a_i = acoustic_vecs[idx]
+            s_i = semantic_vecs[idx]
+            if a_i is None and s_i is None:
                 continue
-            sims: list[tuple[int, float]] = []
-            norm_i = float(np.linalg.norm(sig_i)) + 1e-8
+            candidates: list[tuple[int, float, float]] = []
             for jdx, other in enumerate(recent):
                 if idx == jdx:
                     continue
-                sig_j = signatures[jdx]
-                if sig_j is None:
+                a_j = acoustic_vecs[jdx]
+                s_j = semantic_vecs[jdx]
+                if a_j is None and s_j is None:
                     continue
-                dot = float(np.dot(sig_i, sig_j))
-                norm_j = float(np.linalg.norm(sig_j)) + 1e-8
-                sim = dot / (norm_i * norm_j)
+                acoustic_sim = 0.0
+                if a_i is not None and a_j is not None:
+                    acoustic_sim = float(np.dot(a_i, a_j) / ((np.linalg.norm(a_i) + 1e-8) * (np.linalg.norm(a_j) + 1e-8)))
+                semantic_sim = 0.0
+                if s_i is not None and s_j is not None:
+                    semantic_sim = float(np.dot(s_i, s_j) / ((np.linalg.norm(s_i) + 1e-8) * (np.linalg.norm(s_j) + 1e-8)))
+                combined = 0.45 * (semantic_sim + 1) / 2 + 0.45 * (acoustic_sim + 1) / 2
                 if star.get("speaker") is not None and star.get("speaker") == other.get("speaker"):
-                    sim += 0.2
-                sims.append((jdx, sim))
-            sims.sort(key=lambda item: item[1], reverse=True)
-            for jdx, sim in sims[:2]:
-                if sim <= 0:
+                    combined += 0.1
+                candidates.append((jdx, combined, semantic_sim))
+            candidates.sort(key=lambda item: item[1], reverse=True)
+            for jdx, combined, semantic_sim in candidates[:2]:
+                if combined <= 0:
                     continue
                 a = star["id"]
                 b = recent[jdx]["id"]
                 key = tuple(sorted((a, b)))
                 if key in added:
                     continue
-                strength = softclip((sim + 1) / 2, 0.0, 1.0)
+                width = 1.0 + combined * 3.0
+                line_style = "solid" if star.get("speaker") == recent[jdx].get("speaker") else "dashed"
                 connections.append({
                     "source": a,
                     "target": b,
-                    "strength": round(strength, 3),
+                    "strength": round(softclip(combined, 0.0, 1.0), 3),
+                    "width": round(width, 2),
+                    "style": line_style,
                 })
                 added.add(key)
         return connections

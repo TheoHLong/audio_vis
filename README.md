@@ -6,8 +6,8 @@ A live “speech-to-visuals” experience where microphone input becomes a const
 
 ## What you get
 
-- **Constellation Builder** – Stars spawn from speech with brightness (L10 semantic intensity), twinkle (pitch), emotion colour (L6), and rhythm pulses (L2). Connection lines blur to show semantic neighbours; a mood nebula shifts hue/intensity with Layer 6 energy.
-- **Layer separation** – L10 feeds a frozen semantic plane (trained via SentenceTransformer + ridge regression). L6 is mapped to a 0–1 “emotion energy” for star colour/pulse. L2 powers the metronome pulses and overall beat.
+- **Constellation Builder** – Stars spawn from speech with L10-driven positions, speaker colours from L2 voiceprints, L6-based pulsing, and bottom-bar rhythm pulses. Connection lines combine semantic + acoustic proximity, and the nebula breathes with L6 energy.
+- **Layer separation** – L10 feeds the frozen semantic plane (spatial clusters), L2 encodes speaker voiceprints (star colour + connection affinity), and L6 drives star pulsing / nebula energy.
 - **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Only ~120 recent stars are streamed so updates stay live.
 - **Live transcript & constellations** – Whisper tiny surfaces rolling transcripts, keyword labels, and a “constellations” sidebar with recurring themes.
 - **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, and Whisper.
@@ -91,9 +91,10 @@ Visit [http://localhost:8000](http://localhost:8000) and grant microphone access
 
 | Channel          | Source (WavLM)                 | Visual cue                       |
 |------------------|-------------------------------|----------------------------------|
-| Semantic map     | L10 → frozen projector        | Star position                    |
-| Loudness         | RMS (waveform)                | Star brightness / size baseline  |
-| Emotion energy   | L6 norm                       | Star colour + twinkle amplitude  |
+| Semantic map     | L10 → frozen projector        | Star position / clustering       |
+| Speaker identity | L2 voiceprint clustering      | Star colour                      |
+| Prosody energy   | L6 norm & variation           | Star pulsing & nebula intensity  |
+| Loudness         | RMS (waveform)                | Star brightness / baseline size  |
 | Rhythm pulses    | L2 RMS beats                  | Bottom metronome bars            |
 | Keywords/themes  | Whisper tiny                  | Star labels & constellation list |
 | Transcript       | Whisper tiny                  | Rolling text panel               |
