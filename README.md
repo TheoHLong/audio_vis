@@ -9,7 +9,7 @@ A live “speech-to-visuals” experience where microphone input becomes a layer
 - **Neural Trajectory Plot** – Streamed WavLM layers become a 3D-style line chart: X = time, Y = neuron index, Z = activity. L10 positions guide the path, L2 colours segments by speaker voiceprint, and L6 controls pulse amplitude.
 - **Layer separation** – L10 feeds the frozen semantic plane (spatial clusters), L2 encodes speaker voiceprints (star colour + connection affinity), and L6 drives star pulsing / nebula energy.
 - **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Only ~120 recent stars are streamed so updates stay live.
-- **Live transcript & constellations** – Whisper tiny surfaces rolling transcripts, keyword labels, and a “constellations” sidebar with recurring themes.
+- **Live transcript overlay** – Whisper tiny can still stream rolling transcripts for context; interface degrades gracefully without it.
 - **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, and Whisper.
 
 ---
@@ -85,7 +85,7 @@ Visit [http://localhost:8000](http://localhost:8000) and grant microphone access
 - **Start Listening** toggles the mic stream.
 - **Performance Mode** adjusts visual gain.
 - **Show/Hide Grid** toggles auxiliary guide/grid lines in the 3D projection.
-- **Reset** clears stars/labels for a fresh constellation.
+- **Reset** clears the buffered trajectories for a fresh window.
 
 ### Visual encodings
 
@@ -94,7 +94,8 @@ Visit [http://localhost:8000](http://localhost:8000) and grant microphone access
 | Semantic map     | L10 → frozen projector        | Star position / clustering       |
 | Speaker identity | L2 voiceprint clustering      | Star colour                      |
 | Prosody energy   | L6 norm & variation           | Star pulsing & nebula intensity  |
-| Loudness         | RMS (waveform)                | Star brightness / baseline size  |
+| Loudness         | RMS (frame energy)            | Ridge amplitude baseline         |
+| Audio waveform   | RMS (raw waveform)            | Bottom ridge waveform            |
 | Transcript       | Whisper tiny                  | Rolling text panel               |
 
 Diagnostics show when the semantic plane, speaker clustering, or Whisper probe are warming up (≈6 s).
@@ -135,10 +136,10 @@ Drop the artefact into `SEMANTIC_PROJECTION_PATH` and restart the server.
 
 ## Implementation notes
 
-- **Layer separation** – L10 drives star positions; L6 energy feeds colour/twinkle; L2 triggers rhythm pulses. All three layers update directly from the real-time stream.
-- **Frozen semantic plane** – Frozen ridge/PCA artefact is optional; pipeline falls back to incremental PCA if absent.
-- **Lightweight updates** – Payloads cap at ~120 stars and 40 pulses; websocket pushes ~6 Hz to keep the canvas responsive.
-- **Keyword resilience** – If Whisper weights are missing, the UI shows placeholders but continues plotting stars.
+- **Layer separation** – L10 ridge tracks semantics, L6 ridge shows prosodic energy, and L2 ridge highlights voiceprint changes. All three are updated frame-by-frame from WavLM.
+- **Optional projector** – You can still supply a frozen L10 projector to stabilise neuron selection; the pipeline falls back gracefully if none is provided.
+- **Streaming efficiency** – Layer histories are capped (≈15 s) and payloads stay small; updates go out roughly 6 Hz for smooth animation.
+- **Keyword resilience** – If Whisper weights are missing, the UI shows placeholders but continues plotting trajectories.
 
 ---
 

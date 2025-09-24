@@ -3,21 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Speech → Visual Comet</title>
+  <title>Speech → Neural Trajectories</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <div id="app">
     <div class="top-bar">
       <div class="title-block">
-        <h1>Speech → Constellation</h1>
-        <p>WavLM L2/L6/L10 in real time: build living star maps from voice.</p>
+        <h1>Speech → Neural Trajectories</h1>
+        <p>Watch WavLM layers trace semantic, prosodic, and voiceprint ridges in real time.</p>
       </div>
       <div class="control-block">
         <button id="start-btn" class="primary">Start Listening</button>
         <button id="mode-btn" class="ghost">Performance Mode</button>
         <button id="projection-btn" class="ghost">Hide Grid</button>
-        <button id="reset-btn" class="ghost">Reset Tail</button>
+        <button id="reset-btn" class="ghost">Reset</button>
       </div>
     </div>
 
@@ -30,9 +30,10 @@
         <section class="panel legend">
           <h2>Legend</h2>
           <ul class="legend-list">
-            <li><span class="legend-dot semantic"></span>Position: L10 semantic plane</li>
-            <li><span class="legend-dot energy"></span>Colour: L2 speaker voiceprint</li>
-            <li><span class="legend-dot rhythm"></span>Pulse & bars: L6 prosody + cadence</li>
+            <li><span class="legend-dot semantic"></span>L10 ridge · semantics</li>
+            <li><span class="legend-dot energy"></span>L6 ridge · prosody energy</li>
+            <li><span class="legend-dot rhythm"></span>L2 ridge · speaker voiceprint</li>
+            <li><span class="legend-dot audio"></span>Audio waveform · RMS</li>
           </ul>
           <div class="mode-pill" id="mode-pill">Mode: Analysis</div>
         </section>

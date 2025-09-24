@@ -95,6 +95,7 @@ class CometPipeline:
             "L6": deque(maxlen=history_frames),
             "L10": deque(maxlen=history_frames),
         }
+        self.audio_history: Deque[dict] = deque(maxlen=history_frames)
 
         hop_seconds = self.config.hop_size / self.config.sample_rate
         tau = max(1e-3, self.config.ema_tau_seconds)
@@ -137,7 +138,7 @@ class CometPipeline:
         hop_size = self.config.hop_size
 
         emitted = None
-        last_ts = self.last_emit_timestamp
+        last_ts = None
         while self.frame_buffer.shape[0] >= frame_size:
             frame = self.frame_buffer[:frame_size]
             self.frame_buffer = self.frame_buffer[hop_size:]
@@ -146,7 +147,7 @@ class CometPipeline:
             self.frame_index += 1
             last_ts = timestamp
 
-        if last_ts and last_ts - self.last_emit_timestamp >= self.config.refresh_interval:
+        if last_ts is not None and last_ts - self.last_emit_timestamp >= self.config.refresh_interval:
             emitted = self._build_payload(last_ts)
             self.last_emit_timestamp = last_ts
         return emitted
@@ -203,6 +204,8 @@ class CometPipeline:
             self.semantic_tracker.min(),
             self.semantic_tracker.max() + 1e-6,
         )
+
+        self.audio_history.append({"t": timestamp, "rms": rms_norm})
 
         self._record_activity("L2", timestamp, l2_vec, speaker_id, rms=rms_norm)
         self._record_activity("L6", timestamp, l6_vec, speaker_id, energy=l6_norm, pitch=pitch_norm)
@@ -270,7 +273,7 @@ class CometPipeline:
             for token in keywords
         ]
 
-        projector_ready = True if self.semantic_projector is not None else (self.projector._display_ready if self.projector else False)
+        projector_ready = self.semantic_projector is not None
 
         diagnostics = Diagnostics(
             projector_ready=projector_ready,
@@ -299,10 +302,22 @@ class CometPipeline:
                 }
             )
 
+        audio_payload = {
+            "times": [],
+            "rms": [],
+        }
+        if self.audio_history:
+            base_audio = self.audio_history[0]["t"]
+            audio_payload = {
+                "times": [round(entry["t"] - base_audio, 3) for entry in self.audio_history],
+                "rms": [round(entry["rms"], 4) for entry in self.audio_history],
+            }
+
         payload = {
             "type": "layer_activity",
             "timestamp": round(now_ts, 3),
             "layers": layers_payload,
+            "audio": audio_payload,
             "meta": {
                 "diagnostics": diagnostics.__dict__,
                 "mode": self.mode,
@@ -337,6 +352,7 @@ class CometPipeline:
         self.l6_tracker.reset()
         for buffer in self.layer_buffers.values():
             buffer.clear()
+        self.audio_history.clear()
         self.keywords_cache.clear()
         if hasattr(self.keyword_extractor, "_buffer"):
             self.keyword_extractor._buffer = np.zeros(0, dtype=np.float32)

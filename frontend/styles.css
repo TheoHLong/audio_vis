@@ -177,6 +177,10 @@ button:hover {
   background: rgba(125, 211, 252, 0.8);
 }
 
+.legend-dot.audio {
+  background: rgba(56, 189, 248, 0.8);
+}
+
 .transcript-text {
   min-height: 84px;
   padding: 0.6rem 0.7rem;
