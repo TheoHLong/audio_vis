@@ -285,7 +285,7 @@ class CometPipeline:
             times = [round(entry["t"] - base_time, 3) for entry in buffer]
             indices = [round(entry["index"], 3) for entry in buffer]
             activities = [round(entry["activity"], 4) for entry in buffer]
-        vectors = [entry["vector"] for entry in buffer]
+            vectors = [entry["vector"] for entry in buffer]
             speakers = [entry.get("speaker") for entry in buffer]
             layers_payload.append(
                 {
