@@ -53,7 +53,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--emotion",
-        default="speechbrain/emotion-recognition-wav2vec2-large-960h",
+        default="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
         help="Optional speech emotion model identifier",
     )
     parser.add_argument(

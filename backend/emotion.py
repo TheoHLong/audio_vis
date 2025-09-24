@@ -44,7 +44,7 @@ class EmotionAnalyzer:
         sample_rate: int,
         window_seconds: float,
         update_seconds: float,
-        model_name: str = "speechbrain/emotion-recognition-wav2vec2-large-960h",
+        model_name: str = "speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
     ) -> None:
         self.sample_rate = sample_rate
         self.window_seconds = max(0.6, window_seconds)
