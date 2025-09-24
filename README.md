@@ -1,17 +1,16 @@
-# Speech → Visual Comet
+# Speech → Constellation
 
-A live "speech-to-visuals" experience inspired by the **WavLM Base (L2/L6/L10)** comet trail concept. Audio from the microphone streams to a FastAPI backend that projects selected WavLM layers into 2D in real time. The browser renders a comet-like trail whose colour, width, glow, and transparency reflect speaker identity, loudness, pitch, and semantic intensity. An optional Whisper probe surfaces floating keywords, while an emotion dial summarises live valence–arousal estimates.
+A live “speech-to-visuals” experience where microphone input becomes a constellation: semantic position (WavLM L10) sets the star map, Layer 6 energy colours emotion, and Layer 2 drives rhythmic pulses. Whisper keywords annotate constellations; a nebula backdrop breathes with affect.
 
 ---
 
 ## What you get
 
-- **Constellation Builder** – Speech segments become stars on a semantic map trained offline; brightness tracks loudness, links track thematic proximity, and a nebula background breathes with overall mood.
-- **Layer-aware mappings** – L2 still feeds speaker clustering, while L10 drives the frozen semantic plane (SentenceTransformer + ridge regression) so positions stay interpretable.
-- **Energy & prosody cues** – RMS powers star brightness, pitch adds twinkle, and semantic intensity sets star radius.
-- **Emotion dial & nebula** – A speech emotion recogniser colours stars (red giants for anger, ice tones for calm) and animates the backdrop.
-- **Live transcript & keywords** – Whisper snippets populate a rolling transcript; recent keywords label constellations and feed the theme list.
-- **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, Whisper, and the SER head keep the demo trustworthy.
+- **Constellation Builder** – Stars spawn from speech with brightness (L10 semantic intensity), twinkle (pitch), emotion colour (L6), and rhythm pulses (L2). Connection lines blur to show semantic neighbours; a mood nebula shifts hue/intensity with Layer 6 energy.
+- **Layer separation** – L10 feeds a frozen semantic plane (trained via SentenceTransformer + ridge regression). L6 is mapped to a 0–1 “emotion energy” for star colour/pulse. L2 powers the metronome pulses and overall beat.
+- **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Only ~120 recent stars are streamed so updates stay live.
+- **Live transcript & constellations** – Whisper tiny surfaces rolling transcripts, keyword labels, and a “constellations” sidebar with recurring themes.
+- **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, and Whisper.
 
 ---
 
@@ -19,20 +18,21 @@ A live "speech-to-visuals" experience inspired by the **WavLM Base (L2/L6/L10)**
 
 ```
 backend/
-  config.py           # Pipeline configuration dataclass
-  main.py             # FastAPI application + websocket
-  pipeline.py         # Streaming WavLM feature pipeline → payloads
-  projection.py       # Incremental PCA + speaker clustering helpers
-  emotion.py          # Optional SER head + emotion state dataclass
-  keywords.py         # Optional Whisper-based keyword extractor
-  utils.py            # DSP helpers (RMS, YIN, EMA, rolling stats)
+  config.py           # Pipeline configuration
+  main.py             # FastAPI app + websocket
+  pipeline.py         # Streaming WavLM → constellation payloads
+  projection.py       # Frozen semantic projector / incremental PCA fallback
+  keywords.py         # Whisper keyword probe
+  utils.py            # DSP helpers (RMS, YIN, EMA)
 frontend/
-  index.html          # UI shell and controls
-  main.js             # Web audio capture + canvas visualisation
-  styles.css          # Glassmorphism UI styling
+  index.html          # UI shell
+  main.js             # Constellation renderer + audio capture
+  styles.css          # Styling
 scripts/
-  download_models.py  # Helper to pre-fetch Hugging Face weights
-WavLM_Base_Comet_V2.md # Original design brief / parameter doc
+  download_models.py  # Pre-fetch WavLM + Whisper
+  build_manifest_hf.py # HF dataset fetch + manifest builder
+  extract_features.py  # Cache WavLM features
+  train_semantic_projection.py # Train 2D semantic map
 requirements.txt
 README.md
 ```
@@ -42,11 +42,10 @@ README.md
 ## Prerequisites
 
 - Python 3.10+
-- A modern browser (tested with recent Chromium/WebKit builds)
+- Modern browser
 - Microphone access
-- GPU optional (CPU works; expect higher latency)
 
-> **Models:** the backend requires `microsoft/wavlm-base`. Keyword bubbles and transcripts need `openai/whisper-tiny.en`. The optional emotion dial upgrade pulls `superb/hubert-large-superb-er`. The helper script below pre-fetches all three.
+> **Models:** install `microsoft/wavlm-base` and `openai/whisper-tiny.en`. The helper script pulls both.
 
 ---
 
@@ -54,98 +53,101 @@ README.md
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# Optional but recommended: pre-fetch weights while online
-python scripts/download_models.py           # adds WavLM + Whisper + SER model to cache
-python scripts/download_models.py --skip-whisper --skip-emotion  # lighter download
+# optional but recommended
+python scripts/download_models.py
 ```
 
-If you already have the models cached elsewhere, set `TRANSFORMERS_CACHE` (or symlink the files) before launching the server.
+If you already cached models elsewhere, set `TRANSFORMERS_CACHE` before launching the server.
 
-> **Offline semantic plane:** after downloading data and running the scripts in `scripts/train_semantic_projection.py`, point the backend at the resulting artefact:
+> **Semantic plane:** after training with `scripts/train_semantic_projection.py`, supply the artefact path:
 >
 > ```bash
 > export SEMANTIC_PROJECTION_PATH=artifacts/projections/semantic_librispeech.npz
 > ```
 >
-> (Alternatively wire the path into `PipelineConfig.semantic_projector_path`.)
+> (Or set `PipelineConfig.semantic_projector_path`.)
 
 ---
 
 ## Running the demo
 
 ```bash
-# Activate your virtualenv first
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Then open [http://localhost:8000](http://localhost:8000) in a browser and grant microphone access.
+Visit [http://localhost:8000](http://localhost:8000) and grant microphone access.
 
 ### Controls
 
-- **Start Listening** toggles the microphone stream.
-- **Performance Mode** still nudges stylistic rendering choices (calm vs stage).
-- **Show/Hide Links** toggles the semantic connection lines between stars.
-- **Reset Tail** clears accumulated stars/transcripts for a fresh constellation.
+- **Start Listening** toggles the mic stream.
+- **Performance Mode** adjusts visual gain.
+- **Show/Hide Links** toggles semantic connections.
+- **Reset** clears stars/labels for a fresh constellation.
 
 ### Visual encodings
 
-| Channel | Source | Visual cue |
-| --- | --- | --- |
-| Speaker identity | WavLM L2 → MiniBatchKMeans | Sidebar colour key |
-| Loudness (RMS) | Waveform | Star brightness |
-| Pitch | YIN estimate | Twinkle amplitude |
-| Semantic intensity | L10 vector norm | Star radius |
-| Themes/Topics | Whisper keywords | Star labels & constellation list |
-| Emotion | SER model (speechbrain) + heuristic fallback | Star colour + nebula hue |
-| Transcript | Whisper tiny | Rolling text panel |
-| Links | Nearest neighbours in semantic plane | Toolbar toggle |
+| Channel          | Source (WavLM)                 | Visual cue                       |
+|------------------|-------------------------------|----------------------------------|
+| Semantic map     | L10 → frozen projector        | Star position                    |
+| Loudness         | RMS (waveform)                | Star brightness / size baseline  |
+| Emotion energy   | L6 norm                       | Star colour + twinkle amplitude  |
+| Rhythm pulses    | L2 RMS beats                  | Bottom metronome bars            |
+| Keywords/themes  | Whisper tiny                  | Star labels & constellation list |
+| Transcript       | Whisper tiny                  | Rolling text panel               |
 
-Diagnostics in the sidebar show when the semantic projector, speaker clustering, Whisper probe, or emotion head are ready. Until the warm-up buffers fill (~6 s), those items report “warming”.
+Diagnostics show when the semantic plane, speaker clustering, or Whisper probe are warming up (≈6 s).
+
+---
+
+## Offline training workflow
+
+1. **Build manifest** (e.g. Librispeech subset):
+   ```bash
+   python scripts/build_manifest_hf.py \
+     --dataset librispeech_asr \
+     --config clean \
+     --split train.100 \
+     --limit 1000 \
+     --audio-column audio \
+     --transcript-column text \
+     --output-audio-dir data/librispeech/audio \
+     --output-manifest data/librispeech/manifest.csv
+   ```
+2. **Extract features**:
+   ```bash
+   python scripts/extract_features.py \
+     --manifest data/librispeech/manifest.csv \
+     --base-dir data/librispeech \
+     --output-dir artifacts/features/librispeech
+   ```
+3. **Train semantic plane**:
+   ```bash
+   python scripts/train_semantic_projection.py \
+     --index artifacts/features/librispeech/features_index.json \
+     --output artifacts/projections/semantic_librispeech.npz
+   ```
+
+Drop the artefact into `SEMANTIC_PROJECTION_PATH` and restart the server.
 
 ---
 
 ## Implementation notes
 
-- **Frozen semantic plane** – The offline ridge regression + PCA artefact (SentenceTransformer-aligned) replaces incremental PCA when provided; the pipeline falls back automatically if no file is configured.
-- **Rolling smoothing** – EMA constants follow the document (τ≈0.25 s). The star deque keeps ~240 recent points so the map stays fluid without overwhelming the viewer.
-- **Audio ingestion** – The browser resamples microphone audio to 16 kHz float32 frames and streams them over a websocket. The backend re-frames at 40 ms / 20 ms and pushes constellation updates roughly 6 Hz.
-- **Emotion analyser** – The speech emotion recogniser colours stars and sets the nebula mood; heuristics blend in whenever the model is unavailable.
-- **Keywords** – If Whisper weights are missing, the extractor logs a warning and the UI shows a placeholder while still plotting stars.
+- **Layer separation** – L10 drives star positions; L6 energy feeds colour/twinkle; L2 triggers rhythm pulses. All three layers update directly from the real-time stream.
+- **Frozen semantic plane** – Frozen ridge/PCA artefact is optional; pipeline falls back to incremental PCA if absent.
+- **Lightweight updates** – Payloads cap at ~120 stars and 40 pulses; websocket pushes ~6 Hz to keep the canvas responsive.
+- **Keyword resilience** – If Whisper weights are missing, the UI shows placeholders but continues plotting stars.
 
 ---
 
 ## Verification
 
-Lightweight checks that avoid heavyweight inference:
-
 ```bash
-# Python syntax check
 python -m compileall backend
-
-# Front-end lint-free build (basic formatting / no bundler needed)
-python -m http.server  # optional quick static serve for manual inspection
+python -m compileall frontend/main.js
 ```
 
-Run the live pipeline once models are cached to validate audio flow.
-
----
-
-## Extending the demo
-
-- Swap the 2D projector for Parametric UMAP once you have an anchor dataset.
-- Plug in a stronger ASR or topic classifier for richer semantic overlays.
-- Mirror the comet onto a “state metro” mini-map: the backend already exposes speaker cluster IDs; add a heatmap if desired.
-- Push processed frames to a recorder (e.g. `MediaRecorder` + WebM) to capture rehearsals.
-
----
-
-## Known limitations
-
-- Latency depends on hardware; CPU-only laptops may drift above the 200 ms target under load.
-- Whisper download is skipped offline; keywords revert to a placeholder.
-- The heuristic emotion probe uses lightweight cues and should not be interpreted as an absolute classifier.
-
-Enjoy exploring the bridge between voice intention and visual expression!
+Run end-to-end once models are cached to validate audio flow.

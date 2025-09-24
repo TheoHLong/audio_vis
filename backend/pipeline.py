@@ -13,7 +13,6 @@ import torch
 from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 
 from .config import PipelineConfig
-from .emotion import EmotionAnalyzer, EmotionState
 from .keywords import KeywordCandidate, KeywordExtractor
 from .projection import FrozenSemanticProjector, IncrementalProjector, SpeakerClusterer
 from .utils import (
@@ -40,6 +39,7 @@ class FrameDescriptor:
     pitch_norm: float
     semantic_intensity: float
     semantic_norm: float
+    emotion_level: float
     tail_alpha: float
     line_width: float
     glow: float
@@ -112,19 +112,15 @@ class CometPipeline:
             window_seconds=self.config.keyword_window_seconds,
             stride_seconds=self.config.keyword_stride_seconds,
         )
-        self.emotion_analyzer = EmotionAnalyzer(
-            sample_rate=self.config.sample_rate,
-            window_seconds=self.config.emotion_window_seconds,
-            update_seconds=self.config.emotion_update_seconds,
-        )
         self.keywords_cache: List[KeywordCandidate] = []
 
         self.frame_buffer = np.zeros(0, dtype=np.float32)
         self.frame_index = 0
         self.tail: Deque[FrameDescriptor] = deque(maxlen=int(self.config.frames_per_second * self.config.tail_seconds * 3))
         self.last_emit_timestamp = 0.0
-        self.stars: Deque[dict] = deque(maxlen=240)
+        self.stars: Deque[dict] = deque(maxlen=120)
         self.last_star_timestamp = -1.0
+        self.rhythm_pulses: Deque[dict] = deque(maxlen=80)
 
         hop_seconds = self.config.hop_size / self.config.sample_rate
         tau = max(1e-3, self.config.ema_tau_seconds)
@@ -146,6 +142,7 @@ class CometPipeline:
         self.rms_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
         self.pitch_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
         self.semantic_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
+        self.l6_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
 
         self.palette = [
             "#60a5fa",
@@ -162,7 +159,6 @@ class CometPipeline:
         self.speaker_colors: Dict[int, str] = {}
         self.next_color_index = 0
 
-        self.current_emotion = EmotionState()
         self.mode = "analysis"
 
         torch.set_grad_enabled(False)
@@ -220,6 +216,14 @@ class CometPipeline:
         self.semantic_tracker.update(semantic_intensity)
         self.semantic_ema = ema_update(self.semantic_ema, semantic_intensity, self.ema_alpha)
 
+        l6_intensity = float(np.linalg.norm(l6_vec))
+        self.l6_tracker.update(l6_intensity)
+        l6_norm = normalize(
+            l6_intensity,
+            self.l6_tracker.min(),
+            self.l6_tracker.max() + 1e-6,
+        )
+
         if self.semantic_projector is not None:
             projected = self.semantic_projector.transform(l10_vec)
         else:
@@ -271,16 +275,15 @@ class CometPipeline:
             pitch_norm=pitch_norm,
             semantic_intensity=semantic_intensity,
             semantic_norm=semantic_norm,
+            emotion_level=l6_norm,
             tail_alpha=tail_alpha,
             line_width=line_width,
             glow=glow,
             particle=particle,
         )
 
-        heuristic = self._heuristic_emotion(rms_norm, pitch_norm, semantic_norm)
-        self.current_emotion = self.emotion_analyzer.update(frame, timestamp, heuristic)
-
         self._maybe_add_star(descriptor)
+        self._update_rhythm(descriptor)
 
         return descriptor
 
@@ -300,21 +303,33 @@ class CometPipeline:
         if self.keywords_cache:
             theme = self.keywords_cache[-1].text
 
-        color = self._color_from_emotion(self.current_emotion)
+        color = self._color_from_emotion_level(descriptor.emotion_level)
+        brightness = round(0.55 + descriptor.semantic_norm * 0.35, 4)
         star = {
             "id": int(descriptor.index),
             "t": round(descriptor.timestamp, 3),
             "x": round(float(descriptor.xy[0]), 4),
             "y": round(float(descriptor.xy[1]), 4),
-            "brightness": round(softclip(descriptor.rms_norm, 0.0, 1.0), 4),
+            "brightness": brightness,
             "twinkle": round(softclip(descriptor.pitch_norm, 0.0, 1.0), 4),
             "semantic": round(softclip(descriptor.semantic_norm, 0.0, 1.0), 4),
             "color": color,
             "theme": theme,
-            "emotion": self.current_emotion.label,
+            "emotion_level": round(descriptor.emotion_level, 3),
         }
         self.stars.append(star)
         self.last_star_timestamp = descriptor.timestamp
+
+    # ------------------------------------------------------------------
+    def _update_rhythm(self, descriptor: FrameDescriptor) -> None:
+        strength = descriptor.rms_norm
+        if self.prev_rms is None:
+            return
+        if strength > 0.45 and strength > self.prev_rms + 0.05:
+            self.rhythm_pulses.append({
+                "t": round(descriptor.timestamp, 3),
+                "strength": round(softclip(strength, 0.0, 1.0), 3),
+            })
 
     # ------------------------------------------------------------------
     def _color_for_speaker(self, speaker: int) -> str:
@@ -327,28 +342,17 @@ class CometPipeline:
         return self.speaker_colors[speaker]
 
     # ------------------------------------------------------------------
-    def _color_from_emotion(self, emotion: EmotionState) -> str:
-        label = (emotion.label or "").lower()
-        palette = {
-            "anger": "#ff6b6b",
-            "angry": "#ff6b6b",
-            "fear": "#ff9f1c",
-            "fearful": "#ff9f1c",
-            "sad": "#74c0fc",
-            "sadness": "#74c0fc",
-            "joy": "#ffd43b",
-            "happy": "#ffd43b",
-            "surprise": "#ffffff",
-            "calm": "#e0f2fe",
-            "neutral": "#f8fafc",
-        }
-        if label in palette:
-            return palette[label]
-        # fallback: interpolate by valence
-        valence = softclip(emotion.valence, 0.0, 1.0)
-        hue_low = np.array([96, 165, 250])  # cool
-        hue_high = np.array([255, 120, 85])  # warm
-        rgb = (1 - valence) * hue_low + valence * hue_high
+    def _color_from_emotion_level(self, level: float) -> str:
+        lvl = softclip(level, 0.0, 1.0)
+        calm = np.array([96, 165, 250])
+        mid = np.array([255, 209, 102])
+        intense = np.array([255, 99, 71])
+        if lvl < 0.5:
+            alpha = lvl / 0.5
+            rgb = (1 - alpha) * calm + alpha * mid
+        else:
+            alpha = (lvl - 0.5) / 0.5
+            rgb = (1 - alpha) * mid + alpha * intense
         rgb = np.clip(rgb, 0, 255).astype(int)
         return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
 
@@ -384,13 +388,14 @@ class CometPipeline:
             projector_ready=projector_ready,
             speaker_ready=self.speaker_clusterer.is_ready,
             keyword_ready=self.keyword_extractor._ready,
-            emotion_ready=self.emotion_analyzer.is_ready,
+            emotion_ready=True,
         )
 
-        stars_list = list(self.stars)
+        stars_list = list(self.stars)[-120:]
         connections = self._build_connections(stars_list)
-        nebula = self._build_nebula()
+        nebula = self._build_nebula(np.mean([star.get("emotion_level", 0.5) for star in stars_list[-20:]] or [0.5]))
         themes = self._collect_themes(stars_list)
+        rhythm = list(self.rhythm_pulses)[-40:]
 
         payload = {
             "type": "constellation",
@@ -398,6 +403,7 @@ class CometPipeline:
             "stars": stars_list,
             "connections": connections,
             "nebula": nebula,
+            "rhythm": rhythm,
             "meta": {
                 "diagnostics": diagnostics.__dict__,
                 "mode": self.mode,
@@ -448,10 +454,9 @@ class CometPipeline:
                 self.keyword_extractor._transcript_history = []
                 self.keyword_extractor.last_transcript = ""
                 self.keyword_extractor._prev_transcript = ""
-        if hasattr(self.emotion_analyzer, "reset"):
-            self.emotion_analyzer.reset()
         self.stars.clear()
         self.last_star_timestamp = -1.0
+        self.rhythm_pulses.clear()
 
     # ------------------------------------------------------------------
     def _build_connections(self, stars: List[dict]) -> List[dict]:
@@ -482,18 +487,14 @@ class CometPipeline:
         return connections
 
     # ------------------------------------------------------------------
-    def _build_nebula(self) -> dict:
-        valence = softclip(self.current_emotion.valence, 0.0, 1.0)
-        arousal = softclip(self.current_emotion.arousal, 0.0, 1.0)
-        hue = 220 - valence * 180
-        intensity = 0.25 + arousal * 0.6
+    def _build_nebula(self, emotion_level: float) -> dict:
+        level = softclip(emotion_level, 0.0, 1.0)
+        hue = 220 - level * 180
+        intensity = 0.2 + level * 0.55
         return {
             "hue": round(float(hue), 3),
             "intensity": round(float(intensity), 3),
-            "label": self.current_emotion.label,
-            "confidence": round(self.current_emotion.confidence, 3),
-            "valence": round(valence, 3),
-            "arousal": round(arousal, 3),
+            "level": round(level, 3),
         }
 
     # ------------------------------------------------------------------

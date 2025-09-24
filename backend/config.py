@@ -23,9 +23,6 @@ class PipelineConfig:
     keyword_window_seconds: float = 0.8
     keyword_stride_seconds: float = 0.4
 
-    emotion_update_seconds: float = 1.2
-    emotion_window_seconds: float = 1.6
-
     semantic_projector_path: Optional[str] = None
     star_interval_seconds: float = 0.6
 

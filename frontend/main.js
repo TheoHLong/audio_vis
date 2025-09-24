@@ -21,6 +21,7 @@ const state = {
   transcript: '',
   diagnostics: {},
   mode: 'analysis',
+  rhythm: [],
   drawLinks: true,
 };
 
@@ -189,6 +190,7 @@ function handleMessage(message) {
     state.stars = data.stars || [];
     state.connections = data.connections || [];
     state.nebula = data.nebula || state.nebula;
+    state.rhythm = data.rhythm || [];
     state.diagnostics = data.meta?.diagnostics || {};
     state.mode = data.meta?.mode || state.mode;
     state.transcript = data.meta?.transcript || '';
@@ -273,7 +275,9 @@ function updateDiagnostics() {
 function updateEmotionLabel() {
   const label = state.nebula.label || 'Unknown';
   const conf = state.nebula.confidence ? `${Math.round(state.nebula.confidence * 100)}%` : '';
-  emotionLabel.textContent = conf ? `Emotion: ${label} (${conf})` : `Emotion: ${label}`;
+  const level = state.nebula.level ?? 0.5;
+  const pct = Math.round(level * 100);
+  emotionLabel.textContent = `Emotion energy: ${pct}%`;
 }
 
 function updateModeUI() {
@@ -339,6 +343,7 @@ function drawScene(timeSeconds, dt) {
   ctx.clearRect(0, 0, width, height);
 
   drawNebula(width, height);
+  drawRhythm(width, height, timeSeconds);
 
   if (!state.stars.length) {
     return;
@@ -415,6 +420,31 @@ function drawNebula(width, height) {
   gradient.addColorStop(1, 'rgba(4, 7, 12, 0.95)');
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
+}
+
+function drawRhythm(width, height, timeSeconds) {
+  if (!state.rhythm.length) {
+    return;
+  }
+  const baseY = height - 40;
+  const barHeight = 20;
+  ctx.lineCap = 'round';
+  state.rhythm.forEach((pulse) => {
+    const age = Math.max(0, timeSeconds - pulse.t);
+    if (age > 3) {
+      return;
+    }
+    const alpha = Math.max(0, 1 - age / 3);
+    const strength = pulse.strength ?? 0.6;
+    const x = width / 2 + Math.sin(pulse.t * 2) * (width * 0.4);
+    const thickness = 4 + strength * 14;
+    ctx.strokeStyle = `rgba(148, 197, 255, ${alpha * 0.6})`;
+    ctx.lineWidth = thickness;
+    ctx.beginPath();
+    ctx.moveTo(x, baseY);
+    ctx.lineTo(x, baseY + barHeight);
+    ctx.stroke();
+  });
 }
 
 function computeBounds(stars) {
