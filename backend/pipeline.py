@@ -123,6 +123,8 @@ class CometPipeline:
         self.frame_index = 0
         self.tail: Deque[FrameDescriptor] = deque(maxlen=int(self.config.frames_per_second * self.config.tail_seconds * 3))
         self.last_emit_timestamp = 0.0
+        self.stars: Deque[dict] = deque(maxlen=240)
+        self.last_star_timestamp = -1.0
 
         hop_seconds = self.config.hop_size / self.config.sample_rate
         tau = max(1e-3, self.config.ema_tau_seconds)
@@ -278,6 +280,8 @@ class CometPipeline:
         heuristic = self._heuristic_emotion(rms_norm, pitch_norm, semantic_norm)
         self.current_emotion = self.emotion_analyzer.update(frame, timestamp, heuristic)
 
+        self._maybe_add_star(descriptor)
+
         return descriptor
 
     # ------------------------------------------------------------------
@@ -285,6 +289,32 @@ class CometPipeline:
         threshold = timestamp - self.config.tail_seconds
         while self.tail and self.tail[0].timestamp < threshold:
             self.tail.popleft()
+
+    # ------------------------------------------------------------------
+    def _maybe_add_star(self, descriptor: FrameDescriptor) -> None:
+        interval = max(1e-3, self.config.star_interval_seconds)
+        if self.last_star_timestamp >= 0.0 and descriptor.timestamp - self.last_star_timestamp < interval:
+            return
+
+        theme = None
+        if self.keywords_cache:
+            theme = self.keywords_cache[-1].text
+
+        color = self._color_from_emotion(self.current_emotion)
+        star = {
+            "id": int(descriptor.index),
+            "t": round(descriptor.timestamp, 3),
+            "x": round(float(descriptor.xy[0]), 4),
+            "y": round(float(descriptor.xy[1]), 4),
+            "brightness": round(softclip(descriptor.rms_norm, 0.0, 1.0), 4),
+            "twinkle": round(softclip(descriptor.pitch_norm, 0.0, 1.0), 4),
+            "semantic": round(softclip(descriptor.semantic_norm, 0.0, 1.0), 4),
+            "color": color,
+            "theme": theme,
+            "emotion": self.current_emotion.label,
+        }
+        self.stars.append(star)
+        self.last_star_timestamp = descriptor.timestamp
 
     # ------------------------------------------------------------------
     def _color_for_speaker(self, speaker: int) -> str:
@@ -297,6 +327,32 @@ class CometPipeline:
         return self.speaker_colors[speaker]
 
     # ------------------------------------------------------------------
+    def _color_from_emotion(self, emotion: EmotionState) -> str:
+        label = (emotion.label or "").lower()
+        palette = {
+            "anger": "#ff6b6b",
+            "angry": "#ff6b6b",
+            "fear": "#ff9f1c",
+            "fearful": "#ff9f1c",
+            "sad": "#74c0fc",
+            "sadness": "#74c0fc",
+            "joy": "#ffd43b",
+            "happy": "#ffd43b",
+            "surprise": "#ffffff",
+            "calm": "#e0f2fe",
+            "neutral": "#f8fafc",
+        }
+        if label in palette:
+            return palette[label]
+        # fallback: interpolate by valence
+        valence = softclip(emotion.valence, 0.0, 1.0)
+        hue_low = np.array([96, 165, 250])  # cool
+        hue_high = np.array([255, 120, 85])  # warm
+        rgb = (1 - valence) * hue_low + valence * hue_high
+        rgb = np.clip(rgb, 0, 255).astype(int)
+        return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+
+    # ------------------------------------------------------------------
     def _heuristic_emotion(self, rms_norm: float, pitch_norm: float, semantic_norm: float) -> EmotionState:
         arousal = softclip(0.35 + rms_norm * 0.65, 0.0, 1.0)
         valence = softclip(0.45 + (pitch_norm - 0.5) * 0.3 + (semantic_norm - 0.5) * 0.25, 0.0, 1.0)
@@ -306,37 +362,6 @@ class CometPipeline:
 
     # ------------------------------------------------------------------
     def _build_payload(self, now_ts: float) -> dict:
-        frames_payload = []
-        particles = []
-        for frame in self.tail:
-            payload = {
-                "i": frame.index,
-                "t": round(frame.timestamp, 3),
-                "x": round(float(frame.xy[0]), 4),
-                "y": round(float(frame.xy[1]), 4),
-                "speaker": frame.speaker,
-                "color": self._color_for_speaker(frame.speaker),
-                "width": round(frame.line_width, 3),
-                "alpha": round(frame.tail_alpha, 3),
-                "glow": round(frame.glow, 3),
-                "rms": round(frame.rms_norm, 3),
-                "pitch": round(frame.pitch, 2),
-                "pitch_norm": round(frame.pitch_norm, 3),
-                "semantic": round(frame.semantic_norm, 3),
-            }
-            frames_payload.append(payload)
-            if frame.particle:
-                particles.append({
-                    "i": frame.index,
-                    "t": payload["t"],
-                    "x": payload["x"],
-                    "y": payload["y"],
-                    "color": payload["color"],
-                    "semantic": payload["semantic"],
-                    "pitch_norm": payload["pitch_norm"],
-                })
-
-        head = frames_payload[-1] if frames_payload else None
         self.keywords_cache = [token for token in self.keywords_cache if token.expires_at > now_ts]
         keywords = self.keywords_cache
         if self.keyword_extractor._ready:
@@ -362,22 +387,24 @@ class CometPipeline:
             emotion_ready=self.emotion_analyzer.is_ready,
         )
 
+        stars_list = list(self.stars)
+        connections = self._build_connections(stars_list)
+        nebula = self._build_nebula()
+        themes = self._collect_themes(stars_list)
+
         payload = {
-            "type": "frame_batch",
+            "type": "constellation",
             "timestamp": round(now_ts, 3),
-            "frames": frames_payload,
-            "head": head,
-            "particles": particles,
-            "keywords": keywords_payload,
-            "transcript": transcript,
-            "emotion": {
-                "valence": round(self.current_emotion.valence, 3),
-                "arousal": round(self.current_emotion.arousal, 3),
-                "label": self.current_emotion.label,
-                "confidence": round(self.current_emotion.confidence, 3),
+            "stars": stars_list,
+            "connections": connections,
+            "nebula": nebula,
+            "meta": {
+                "diagnostics": diagnostics.__dict__,
+                "mode": self.mode,
+                "transcript": transcript,
+                "keywords": keywords_payload,
+                "themes": themes,
             },
-            "diagnostics": diagnostics.__dict__,
-            "mode": self.mode,
         }
         return payload
 
@@ -423,3 +450,60 @@ class CometPipeline:
                 self.keyword_extractor._prev_transcript = ""
         if hasattr(self.emotion_analyzer, "reset"):
             self.emotion_analyzer.reset()
+        self.stars.clear()
+        self.last_star_timestamp = -1.0
+
+    # ------------------------------------------------------------------
+    def _build_connections(self, stars: List[dict]) -> List[dict]:
+        if len(stars) < 2:
+            return []
+        recent = stars[-60:]
+        positions = np.array([[s["x"], s["y"]] for s in recent], dtype=np.float32)
+        max_dist = np.linalg.norm(np.max(positions, axis=0) - np.min(positions, axis=0)) + 1e-6
+        connections = []
+        added = set()
+        for idx, star in enumerate(recent):
+            dists = np.linalg.norm(positions - positions[idx], axis=1)
+            order = np.argsort(dists)
+            neighbors = [o for o in order if o != idx][:2]
+            for nb in neighbors:
+                a = star["id"]
+                b = recent[nb]["id"]
+                key = tuple(sorted((a, b)))
+                if key in added:
+                    continue
+                strength = 1.0 - float(min(dists[nb] / max_dist, 1.0))
+                connections.append({
+                    "source": a,
+                    "target": b,
+                    "strength": round(softclip(strength, 0.0, 1.0), 3),
+                })
+                added.add(key)
+        return connections
+
+    # ------------------------------------------------------------------
+    def _build_nebula(self) -> dict:
+        valence = softclip(self.current_emotion.valence, 0.0, 1.0)
+        arousal = softclip(self.current_emotion.arousal, 0.0, 1.0)
+        hue = 220 - valence * 180
+        intensity = 0.25 + arousal * 0.6
+        return {
+            "hue": round(float(hue), 3),
+            "intensity": round(float(intensity), 3),
+            "label": self.current_emotion.label,
+            "confidence": round(self.current_emotion.confidence, 3),
+            "valence": round(valence, 3),
+            "arousal": round(arousal, 3),
+        }
+
+    # ------------------------------------------------------------------
+    def _collect_themes(self, stars: List[dict]) -> List[dict]:
+        themes: Dict[str, int] = {}
+        for star in stars[-100:]:
+            theme = star.get("theme")
+            if not theme:
+                continue
+            key = theme.lower()
+            themes[key] = themes.get(key, 0) + 1
+        top = sorted(themes.items(), key=lambda item: item[1], reverse=True)[:5]
+        return [{"text": theme, "count": count} for theme, count in top]

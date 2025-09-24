@@ -3,7 +3,7 @@ const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('start-btn');
 const modeBtn = document.getElementById('mode-btn');
 const resetBtn = document.getElementById('reset-btn');
-const projectionBtn = document.getElementById('projection-btn');
+const linksBtn = document.getElementById('projection-btn');
 const valenceBar = document.getElementById('valence-bar');
 const arousalBar = document.getElementById('arousal-bar');
 const keywordList = document.getElementById('keyword-list');
@@ -13,18 +13,15 @@ const transcriptText = document.getElementById('transcript-text');
 const emotionLabel = document.getElementById('emotion-label');
 
 const state = {
-  frames: [],
-  head: null,
-  emotion: { valence: 0.5, arousal: 0.5, label: 'neutral', confidence: 0 },
+  stars: [],
+  connections: [],
+  nebula: { hue: 210, intensity: 0.3, label: 'neutral', valence: 0.5, arousal: 0.5 },
+  themes: [],
   keywords: [],
+  transcript: '',
   diagnostics: {},
   mode: 'analysis',
-  palette: [],
-  defaultColor: '#4b5563',
-  particles: [],
-  connected: false,
-  transcript: '',
-  projectionMode: 'latent',
+  drawLinks: true,
 };
 
 let ws = null;
@@ -35,61 +32,49 @@ let processorNode = null;
 let listening = false;
 
 const TARGET_SAMPLE_RATE = 16_000;
-const MODE_SETTINGS = {
-  analysis: { widthScale: 0.9, glowScale: 1.0, pulse: 1.0 },
-  performance: { widthScale: 1.5, glowScale: 1.8, pulse: 1.3 },
-};
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.round(rect.width * dpr);
   canvas.height = Math.round(rect.height * dpr);
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-window.addEventListener('resize', () => {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  resizeCanvas();
-});
+window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-function connectWebSocket() {
+async function ensureSocket() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    return Promise.resolve();
+    return;
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws/audio`;
   ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
-  return new Promise((resolve, reject) => {
-    ws.onopen = () => {
-      state.connected = true;
-      resolve();
-    };
+  ws.onopen = () => {
+    console.log('WebSocket connected');
+  };
 
-    ws.onmessage = (event) => {
-      handleMessage(event.data);
-    };
+  ws.onmessage = (event) => {
+    handleMessage(event.data);
+  };
 
-    ws.onerror = (err) => {
-      console.error('WebSocket error', err);
-      reject(err);
-    };
+  ws.onerror = (err) => {
+    console.error('WebSocket error', err);
+  };
 
-    ws.onclose = () => {
-      state.connected = false;
-      listening = false;
-      updateButtons();
-      setTimeout(() => connectWebSocket(), 1500).catch(() => undefined);
-    };
-  });
+  ws.onclose = () => {
+    listening = false;
+    updateButtons();
+    setTimeout(() => ensureSocket().catch(() => undefined), 1500);
+  };
 }
 
 async function startListening() {
   try {
-    await connectWebSocket();
+    await ensureSocket();
     if (!mediaStream) {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -117,7 +102,7 @@ async function startListening() {
 
     processorNode.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
-      const down = downsampleBuffer(input, audioContext.sampleRate, TARGET_SAMPLE_RATE);
+      const down = downsample(input, audioContext.sampleRate, TARGET_SAMPLE_RATE);
       if (down && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(down.buffer);
       }
@@ -157,7 +142,7 @@ function stopListening() {
   }
 }
 
-function downsampleBuffer(buffer, inRate, outRate) {
+function downsample(buffer, inRate, outRate) {
   if (!buffer || inRate === outRate) {
     return Float32Array.from(buffer);
   }
@@ -193,124 +178,109 @@ function handleMessage(message) {
     return;
   }
   if (data.type === 'hello') {
-    state.palette = data.palette || [];
-    state.defaultColor = data.defaultColor || '#4b5563';
     return;
   }
   if (data.type === 'mode') {
-    state.mode = data.mode || 'analysis';
+    state.mode = data.mode || state.mode;
     updateModeUI();
     return;
   }
-  if (data.type === 'reset') {
-    state.frames = [];
-    state.head = null;
-    state.particles = [];
-    state.transcript = '';
-    updateTranscript();
-    return;
-  }
-  if (data.type === 'frame_batch') {
-    state.frames = data.frames || [];
-    state.head = data.head || null;
-    state.emotion = data.emotion || state.emotion;
-    state.keywords = data.keywords || [];
-    state.diagnostics = data.diagnostics || {};
-    state.mode = data.mode || state.mode;
-    state.transcript = typeof data.transcript === 'string' ? data.transcript : state.transcript;
-    const particles = data.particles || [];
-    particles.forEach((particle) => {
-      state.particles.push({
-        x: particle.x,
-        y: particle.y,
-        color: particle.color,
-        life: 1.0,
-        semantic: particle.semantic,
-        pitch_norm: particle.pitch_norm,
-      });
-    });
+  if (data.type === 'constellation') {
+    state.stars = data.stars || [];
+    state.connections = data.connections || [];
+    state.nebula = data.nebula || state.nebula;
+    state.diagnostics = data.meta?.diagnostics || {};
+    state.mode = data.meta?.mode || state.mode;
+    state.transcript = data.meta?.transcript || '';
+    state.keywords = data.meta?.keywords || [];
+    state.themes = data.meta?.themes || [];
     updateBars();
-    updateKeywords();
-    updateDiagnostics();
     updateTranscript();
+    updateKeywords();
+    updateThemes();
+    updateDiagnostics();
     updateEmotionLabel();
     updateModeUI();
+    return;
   }
 }
 
 function updateBars() {
   const clamp = (value) => Math.max(0, Math.min(1, value));
-  valenceBar.style.transform = `scaleX(${clamp(state.emotion.valence)})`;
-  arousalBar.style.transform = `scaleX(${clamp(state.emotion.arousal)})`;
+  valenceBar.style.transform = `scaleX(${clamp(state.nebula.valence ?? 0.5)})`;
+  arousalBar.style.transform = `scaleX(${clamp(state.nebula.arousal ?? 0.5)})`;
+}
+
+function updateTranscript() {
+  const text = state.transcript && state.transcript.trim() ? state.transcript.trim() : 'Listening…';
+  transcriptText.textContent = text;
 }
 
 function updateKeywords() {
   keywordList.innerHTML = '';
-  const end = state.keywords.slice(-4);
-  end.forEach((keyword) => {
+  const items = state.keywords.slice(-6);
+  if (items.length === 0) {
     const li = document.createElement('li');
-    li.textContent = keyword.text.toUpperCase();
-    li.style.opacity = keyword.confidence ?? 0.6;
+    li.textContent = '—';
+    li.style.opacity = 0.4;
+    keywordList.appendChild(li);
+    return;
+  }
+  items.forEach((item) => {
+    const li = document.createElement('li');
+    li.textContent = item.text.toUpperCase();
+    li.style.opacity = item.confidence ?? 0.8;
     keywordList.appendChild(li);
   });
-  if (end.length === 0) {
-    const empty = document.createElement('li');
-    empty.textContent = '—';
-    empty.style.opacity = 0.4;
-    keywordList.appendChild(empty);
+}
+
+function updateThemes() {
+  const themePanel = document.getElementById('themes-list');
+  if (!themePanel) {
+    return;
   }
+  themePanel.innerHTML = '';
+  if (!state.themes.length) {
+    const li = document.createElement('li');
+    li.textContent = 'Themes forming…';
+    li.style.opacity = 0.6;
+    themePanel.appendChild(li);
+    return;
+  }
+  state.themes.forEach((theme) => {
+    const li = document.createElement('li');
+    li.textContent = `${theme.text.toUpperCase()} ×${theme.count}`;
+    themePanel.appendChild(li);
+  });
 }
 
 function updateDiagnostics() {
   diagnosticsList.innerHTML = '';
   const entries = [
-    { key: 'projector_ready', label: 'Projection', value: state.diagnostics.projector_ready },
-    { key: 'speaker_ready', label: 'Speaker Clusters', value: state.diagnostics.speaker_ready },
-    { key: 'keyword_ready', label: 'Whisper', value: state.diagnostics.keyword_ready },
-    { key: 'emotion_ready', label: 'Emotion', value: state.diagnostics.emotion_ready },
+    { label: 'Semantic plane', value: state.diagnostics.projector_ready },
+    { label: 'Speaker clusters', value: state.diagnostics.speaker_ready },
+    { label: 'Whisper', value: state.diagnostics.keyword_ready },
+    { label: 'Emotion', value: state.diagnostics.emotion_ready },
   ];
   entries.forEach((entry) => {
     const li = document.createElement('li');
-    const status = entry.value ? 'online' : 'warming';
-    const color = entry.value ? 'rgba(125, 211, 252, 0.95)' : 'rgba(251, 191, 36, 0.85)';
-    li.innerHTML = `<span style="color:${color};font-weight:600">●</span> ${entry.label}: ${status}`;
+    const ok = Boolean(entry.value);
+    li.innerHTML = `<span style="color:${ok ? 'rgba(125, 211, 252, 0.95)' : 'rgba(251, 191, 36, 0.85)'};font-weight:600">●</span> ${entry.label}: ${ok ? 'online' : 'warming'}`;
     diagnosticsList.appendChild(li);
   });
 }
 
-function updateProjectionButton() {
-  const useFeatures = state.projectionMode === 'features';
-  projectionBtn.textContent = useFeatures ? 'Latent Map' : 'Feature Axes';
-  projectionBtn.classList.toggle('primary', useFeatures);
-  projectionBtn.classList.toggle('ghost', !useFeatures);
-}
-
-function updateTranscript() {
-  const ready = Boolean(state.diagnostics && state.diagnostics.keyword_ready);
-  const fallback = ready
-    ? 'Listening…'
-    : 'Listening… (install openai/whisper-tiny.en for transcripts)';
-  const text = state.transcript && state.transcript.trim() ? state.transcript.trim() : fallback;
-  transcriptText.textContent = text;
-}
-
 function updateEmotionLabel() {
-  const emotion = state.emotion || {};
-  const rawLabel = typeof emotion.label === 'string' && emotion.label.length > 0 ? emotion.label : 'unknown';
-  const prettyLabel = rawLabel
-    .split(/\s|_/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
-  const confidence = typeof emotion.confidence === 'number' ? Math.round(emotion.confidence * 100) : null;
-  const labelText = confidence ? `${prettyLabel} (${confidence}%)` : prettyLabel;
-  emotionLabel.textContent = `Emotion: ${labelText}`;
+  const label = state.nebula.label || 'Unknown';
+  const conf = state.nebula.confidence ? `${Math.round(state.nebula.confidence * 100)}%` : '';
+  emotionLabel.textContent = conf ? `Emotion: ${label} (${conf})` : `Emotion: ${label}`;
 }
 
 function updateModeUI() {
   const nextMode = state.mode === 'analysis' ? 'performance' : 'analysis';
   modeBtn.textContent = `${nextMode.charAt(0).toUpperCase() + nextMode.slice(1)} Mode`;
   modePill.textContent = `Mode: ${state.mode.charAt(0).toUpperCase() + state.mode.slice(1)}`;
+  linksBtn.textContent = state.drawLinks ? 'Hide Links' : 'Show Links';
 }
 
 function updateButtons() {
@@ -335,171 +305,164 @@ modeBtn.addEventListener('click', () => {
   ws.send(JSON.stringify({ type: 'mode', mode: nextMode }));
 });
 
-projectionBtn.addEventListener('click', () => {
-  state.projectionMode = state.projectionMode === 'features' ? 'latent' : 'features';
-  updateProjectionButton();
+linksBtn.addEventListener('click', () => {
+  state.drawLinks = !state.drawLinks;
+  updateModeUI();
 });
 
 resetBtn.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'reset' }));
   }
-  state.frames = [];
-  state.head = null;
-  state.particles = [];
-  state.transcript = '';
-  state.emotion = { valence: 0.5, arousal: 0.5, label: 'neutral', confidence: 0 };
+  state.stars = [];
+  state.connections = [];
   state.keywords = [];
-  updateBars();
-  updateKeywords();
+  state.themes = [];
+  state.transcript = '';
   updateTranscript();
-  updateEmotionLabel();
+  updateKeywords();
+  updateThemes();
 });
 
 let lastFrame = performance.now();
 function render(now) {
   const dt = Math.min((now - lastFrame) / 1000, 0.1);
   lastFrame = now;
-  drawScene(dt);
+  drawScene(now / 1000, dt);
   requestAnimationFrame(render);
 }
 requestAnimationFrame(render);
 
-function withAlpha(hex, alpha) {
-  const safeHex = hex && hex.startsWith('#') ? hex : state.defaultColor;
-  const r = parseInt(safeHex.slice(1, 3), 16);
-  const g = parseInt(safeHex.slice(3, 5), 16);
-  const b = parseInt(safeHex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function drawScene(dt) {
+function drawScene(timeSeconds, dt) {
   const width = canvas.width / (window.devicePixelRatio || 1);
   const height = canvas.height / (window.devicePixelRatio || 1);
-  const { valence, arousal } = state.emotion;
+  ctx.clearRect(0, 0, width, height);
 
-  const baseHue = 200 + (valence - 0.5) * 80;
-  const intensity = 0.08 + arousal * 0.18;
-  const gradient = ctx.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, `rgba(${hslToRgb(baseHue, 60, 18)}, ${Math.min(0.45, intensity)})`);
-  gradient.addColorStop(1, 'rgba(5, 9, 18, 0.95)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
+  drawNebula(width, height);
 
+  if (!state.stars.length) {
+    return;
+  }
+
+  const bounds = computeBounds(state.stars);
+  const scaleX = bounds.scaleX * width * 0.45;
+  const scaleY = bounds.scaleY * height * 0.45;
   const centerX = width / 2;
   const centerY = height / 2;
-  const scale = Math.min(width, height) * 0.42;
-  const featureScale = Math.min(width, height) * 0.5;
-  const settings = MODE_SETTINGS[state.mode] || MODE_SETTINGS.analysis;
-  const useFeatureProjection = state.projectionMode === 'features';
 
-  const projectFrame = (frame) => {
-    if (!frame) {
-      return { x: centerX, y: centerY };
-    }
-    if (useFeatureProjection) {
-      const semantic = typeof frame.semantic === 'number' ? frame.semantic : 0.5;
-      const pitchNorm = typeof frame.pitch_norm === 'number' ? frame.pitch_norm : 0.5;
-      const px = (semantic * 2 - 1) * 0.9;
-      const py = (pitchNorm * 2 - 1) * 0.9;
-      return {
-        x: centerX + featureScale * px,
-        y: centerY - featureScale * py,
-      };
-    }
-    return {
-      x: centerX + scale * frame.x,
-      y: centerY - scale * frame.y,
-    };
-  };
-
-  const frames = state.frames;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-
-  for (let i = 1; i < frames.length; i += 1) {
-    const prev = frames[i - 1];
-    const curr = frames[i];
-    const prevPos = projectFrame(prev);
-    const currPos = projectFrame(curr);
-    ctx.beginPath();
-    ctx.moveTo(prevPos.x, prevPos.y);
-    ctx.lineTo(currPos.x, currPos.y);
-    ctx.lineWidth = Math.max(1.2, curr.width * settings.widthScale);
-    ctx.strokeStyle = withAlpha(curr.color, Math.min(curr.alpha * 1.1, 1));
-    ctx.shadowBlur = 40 * curr.glow * settings.glowScale;
-    ctx.shadowColor = withAlpha(curr.color, Math.min(curr.glow * 1.4, 1));
-    ctx.stroke();
-  }
-  ctx.shadowBlur = 0;
-
-  // Particles / emphasis pulses
-  const nextParticles = [];
-  state.particles.forEach((particle) => {
-    const decay = Math.exp(-dt * 2.8);
-    particle.life *= decay;
-    if (particle.life < 0.05) return;
-    let px;
-    let py;
-    if (useFeatureProjection) {
-      const semantic = typeof particle.semantic === 'number' ? particle.semantic : 0.5;
-      const pitchNorm = typeof particle.pitch_norm === 'number' ? particle.pitch_norm : 0.5;
-      px = centerX + featureScale * ((semantic * 2 - 1) * 0.9);
-      py = centerY - featureScale * ((pitchNorm * 2 - 1) * 0.9);
-    } else {
-      px = centerX + scale * particle.x;
-      py = centerY - scale * particle.y;
-    }
-    const radius = 4 + (1 - particle.life) * 12 * settings.pulse;
-    ctx.beginPath();
-    ctx.fillStyle = withAlpha(particle.color, particle.life);
-    ctx.arc(px, py, radius, 0, Math.PI * 2);
-    ctx.fill();
-    nextParticles.push(particle);
+  const positions = new Map();
+  state.stars.forEach((star) => {
+    const px = centerX + (star.x - bounds.midX) * scaleX;
+    const py = centerY - (star.y - bounds.midY) * scaleY;
+    positions.set(star.id, { x: px, y: py });
   });
-  state.particles = nextParticles;
 
-  // Draw head glow
-  if (state.head) {
-    const headPos = projectFrame(state.head);
-    const hx = headPos.x;
-    const hy = headPos.y;
-    const radius = 8 + state.head.width * 2.5 * settings.widthScale;
-    const headGlow = ctx.createRadialGradient(hx, hy, 0, hx, hy, radius * 2.6);
-    headGlow.addColorStop(0, withAlpha(state.head.color, Math.min(0.75 + state.head.glow * 0.3, 1)));
-    headGlow.addColorStop(1, 'rgba(5,6,16,0)');
-    ctx.fillStyle = headGlow;
-    ctx.beginPath();
-    ctx.arc(hx, hy, radius * 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = 'rgba(241, 245, 249, 0.9)';
-    ctx.font = '600 14px "Inter", system-ui';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    state.keywords.slice(-3).forEach((keyword, idx) => {
-      const offsetY = (idx - 1) * 20;
-      const alpha = Math.min(1, keyword.confidence ?? 0.7);
-      ctx.fillStyle = `rgba(226, 232, 255, ${alpha})`;
-      ctx.fillText(keyword.text.toUpperCase(), hx + 18, hy + offsetY);
+  if (state.drawLinks) {
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    state.connections.forEach((edge) => {
+      const from = positions.get(edge.source);
+      const to = positions.get(edge.target);
+      if (!from || !to) {
+        return;
+      }
+      const alpha = Math.max(0.05, Math.min(0.8, edge.strength));
+      ctx.strokeStyle = `rgba(148, 197, 255, ${alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
     });
   }
+
+  state.stars.forEach((star) => {
+    const pos = positions.get(star.id);
+    if (!pos) {
+      return;
+    }
+    const baseRadius = 4 + star.semantic * 10;
+    const twinkle = 0.6 + Math.sin(timeSeconds * 4 + star.id) * 0.4 * star.twinkle;
+    const radius = baseRadius * twinkle;
+
+    const brightness = Math.max(0.3, star.brightness);
+    const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, radius * 1.8);
+    gradient.addColorStop(0, applyAlpha(star.color, 0.9));
+    gradient.addColorStop(1, applyAlpha(star.color, 0.0));
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = applyAlpha('#ffffff', brightness);
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (star.theme) {
+      ctx.fillStyle = 'rgba(226, 232, 240, 0.8)';
+      ctx.font = '600 11px "Inter", system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(star.theme.toUpperCase(), pos.x, pos.y - radius - 6);
+    }
+  });
 }
 
-function hslToRgb(h, s, l) {
-  const saturation = s / 100;
-  const lightness = l / 100;
-  const k = (n) => (n + h / 30) % 12;
-  const a = saturation * Math.min(lightness, 1 - lightness);
-  const f = (n) => lightness - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-  return `${Math.round(f(0) * 255)}, ${Math.round(f(8) * 255)}, ${Math.round(f(4) * 255)}`;
+function drawNebula(width, height) {
+  const hue = state.nebula.hue ?? 210;
+  const intensity = state.nebula.intensity ?? 0.3;
+  const gradient = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height));
+  gradient.addColorStop(0, `hsla(${hue}, 70%, 12%, ${intensity})`);
+  gradient.addColorStop(1, 'rgba(4, 7, 12, 0.95)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+}
+
+function computeBounds(stars) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  stars.forEach((star) => {
+    minX = Math.min(minX, star.x);
+    maxX = Math.max(maxX, star.x);
+    minY = Math.min(minY, star.y);
+    maxY = Math.max(maxY, star.y);
+  });
+  if (!Number.isFinite(minX) || minX === maxX) {
+    minX = -1;
+    maxX = 1;
+  }
+  if (!Number.isFinite(minY) || minY === maxY) {
+    minY = -1;
+    maxY = 1;
+  }
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+  const rangeX = Math.max(maxX - minX, 0.5);
+  const rangeY = Math.max(maxY - minY, 0.5);
+  return {
+    midX,
+    midY,
+    scaleX: 1 / rangeX,
+    scaleY: 1 / rangeY,
+  };
+}
+
+function applyAlpha(color, alpha) {
+  if (!color || !color.startsWith('#')) {
+    return `rgba(255,255,255,${alpha})`;
+  }
+  const r = parseInt(color.slice(1, 3), 16);
+  const g = parseInt(color.slice(3, 5), 16);
+  const b = parseInt(color.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 updateButtons();
 updateModeUI();
 updateKeywords();
+updateThemes();
 updateDiagnostics();
 updateBars();
 updateTranscript();
 updateEmotionLabel();
-updateProjectionButton();

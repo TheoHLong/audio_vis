@@ -6,15 +6,12 @@ A live "speech-to-visuals" experience inspired by the **WavLM Base (L2/L6/L10)**
 
 ## What you get
 
-- **Real-time pipeline (<200 ms budget)** – 40 ms windows, 20 ms stride, incremental PCA→2D, EMA smoothing per the implementation notes.
-- **Layer-aware mappings** – L2 drives speaker clusters/colour, L6 forms the comet trajectory, L10 governs semantic intensity and tail transparency.
-- **Energy & prosody cues** – RMS widens the tail, a lightweight YIN pitch estimator brightens the glow, transient surges spawn particle bursts.
-- **Emotion dial** – Pretrained SER (speechbrain/emotion-recognition-wav2vec2) blended with RMS/pitch heuristics for steady valence/arousal.
-- **Performance toggle** – Switch between *Analysis* (calm) and *Performance* (amped) render styles; reset tail with one click.
-- **Optional keywords** – If `openai/whisper-tiny.en` is cached locally, floating keyword bubbles appear near the comet head.
-- **Projection switcher** – Toggle between latent PCA trails and interpretable semantic×pitch feature axes directly in the UI.
-- **Live transcript** – Whisper snippets accumulate into a rolling transcript panel beside the comet; falls back gracefully when ASR is unavailable.
-- **Diagnostics panel** – Reassure evaluators with live readiness indicators for projector, speaker clustering, and keyword modules.
+- **Constellation Builder** – Speech segments become stars on a semantic map trained offline; brightness tracks loudness, links track thematic proximity, and a nebula background breathes with overall mood.
+- **Layer-aware mappings** – L2 still feeds speaker clustering, while L10 drives the frozen semantic plane (SentenceTransformer + ridge regression) so positions stay interpretable.
+- **Energy & prosody cues** – RMS powers star brightness, pitch adds twinkle, and semantic intensity sets star radius.
+- **Emotion dial & nebula** – A speech emotion recogniser colours stars (red giants for anger, ice tones for calm) and animates the backdrop.
+- **Live transcript & keywords** – Whisper snippets populate a rolling transcript; recent keywords label constellations and feed the theme list.
+- **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, Whisper, and the SER head keep the demo trustworthy.
 
 ---
 
@@ -67,6 +64,14 @@ python scripts/download_models.py --skip-whisper --skip-emotion  # lighter downl
 
 If you already have the models cached elsewhere, set `TRANSFORMERS_CACHE` (or symlink the files) before launching the server.
 
+> **Offline semantic plane:** after downloading data and running the scripts in `scripts/train_semantic_projection.py`, point the backend at the resulting artefact:
+>
+> ```bash
+> export SEMANTIC_PROJECTION_PATH=artifacts/projections/semantic_librispeech.npz
+> ```
+>
+> (Alternatively wire the path into `PipelineConfig.semantic_projector_path`.)
+
 ---
 
 ## Running the demo
@@ -81,35 +86,34 @@ Then open [http://localhost:8000](http://localhost:8000) in a browser and grant 
 ### Controls
 
 - **Start Listening** toggles the microphone stream.
-- **Performance Mode** amplifies line width, glow, and particles for stage demos. Click again to return to Analysis.
-- **Feature Axes / Latent Map** switches between PCA coordinates and interpretable semantic×pitch axes.
-- **Reset Tail** clears accumulated states without restarting the server.
+- **Performance Mode** still nudges stylistic rendering choices (calm vs stage).
+- **Show/Hide Links** toggles the semantic connection lines between stars.
+- **Reset Tail** clears accumulated stars/transcripts for a fresh constellation.
 
 ### Visual encodings
 
 | Channel | Source | Visual cue |
 | --- | --- | --- |
-| Speaker identity | WavLM L2 → MiniBatchKMeans | Colour hue |
-| Loudness (RMS) | Waveform | Tail width / head radius |
-| Pitch | YIN estimate | Glow intensity |
-| Semantic intensity | L10 vector norm | Tail opacity |
-| Prosodic bursts | RMS surges | Particle flares |
-| Emotion | SER model (speechbrain) + heuristic fallback | Background hue, dial, label |
-| Keywords (optional) | Whisper tiny | Floating labels near head |
+| Speaker identity | WavLM L2 → MiniBatchKMeans | Sidebar colour key |
+| Loudness (RMS) | Waveform | Star brightness |
+| Pitch | YIN estimate | Twinkle amplitude |
+| Semantic intensity | L10 vector norm | Star radius |
+| Themes/Topics | Whisper keywords | Star labels & constellation list |
+| Emotion | SER model (speechbrain) + heuristic fallback | Star colour + nebula hue |
 | Transcript | Whisper tiny | Rolling text panel |
-| Projection mode | PCA on L6 vs semantic/pitch metrics | Toolbar toggle |
+| Links | Nearest neighbours in semantic plane | Toolbar toggle |
 
-Diagnostics in the sidebar show when the PCA projector, speaker clustering, or keyword probe are ready. Until the warm-up buffers fill (~6 s), those items report “warming”.
+Diagnostics in the sidebar show when the semantic projector, speaker clustering, Whisper probe, or emotion head are ready. Until the warm-up buffers fill (~6 s), those items report “warming”.
 
 ---
 
 ## Implementation notes
 
-- **Incremental PCA** – The projector maintains a 32-D latent space before folding down to 2D; it gracefully falls back to raw axes until enough data is seen.
-- **Smoothing** – EMA constants follow the document (τ≈0.25 s). Tail retention is capped at 2.5 s with timestamp-based eviction.
-- **Audio ingestion** – The browser resamples microphone audio to 16 kHz float32 frames and streams them over a websocket. The backend re-frames at 40 ms / 20 ms and pushes batched payloads roughly 6 Hz.
-- **Emotion analyser** – A speech emotion recogniser provides label + V/A estimates; when the model is unavailable we fall back to the handcrafted RMS/pitch heuristic.
-- **Keywords** – If Whisper weights are missing, the extractor logs a warning and the UI shows a fallback state with dashes.
+- **Frozen semantic plane** – The offline ridge regression + PCA artefact (SentenceTransformer-aligned) replaces incremental PCA when provided; the pipeline falls back automatically if no file is configured.
+- **Rolling smoothing** – EMA constants follow the document (τ≈0.25 s). The star deque keeps ~240 recent points so the map stays fluid without overwhelming the viewer.
+- **Audio ingestion** – The browser resamples microphone audio to 16 kHz float32 frames and streams them over a websocket. The backend re-frames at 40 ms / 20 ms and pushes constellation updates roughly 6 Hz.
+- **Emotion analyser** – The speech emotion recogniser colours stars and sets the nebula mood; heuristics blend in whenever the model is unavailable.
+- **Keywords** – If Whisper weights are missing, the extractor logs a warning and the UI shows a placeholder while still plotting stars.
 
 ---
 

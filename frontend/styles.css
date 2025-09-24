@@ -198,6 +198,22 @@ button:hover {
   text-transform: uppercase;
 }
 
+.themes ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.themes li {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(191, 219, 254, 0.82);
+}
+
 .transcript-text {
   min-height: 84px;
   padding: 0.6rem 0.7rem;

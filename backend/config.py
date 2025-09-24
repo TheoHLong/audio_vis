@@ -27,6 +27,7 @@ class PipelineConfig:
     emotion_window_seconds: float = 1.6
 
     semantic_projector_path: Optional[str] = None
+    star_interval_seconds: float = 0.6
 
     @property
     def frame_size(self) -> int:
