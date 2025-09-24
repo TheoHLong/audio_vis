@@ -53,7 +53,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--emotion",
-        default="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+        default="superb/hubert-large-superb-er",
         help="Optional speech emotion model identifier",
     )
     parser.add_argument(

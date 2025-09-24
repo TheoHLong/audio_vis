@@ -46,7 +46,7 @@ README.md
 - Microphone access
 - GPU optional (CPU works; expect higher latency)
 
-> **Models:** the backend requires `microsoft/wavlm-base`. Keyword bubbles and transcripts need `openai/whisper-tiny.en`. The optional emotion dial upgrade pulls `speechbrain/emotion-recognition-wav2vec2-large-960h`. The helper script below pre-fetches all three.
+> **Models:** the backend requires `microsoft/wavlm-base`. Keyword bubbles and transcripts need `openai/whisper-tiny.en`. The optional emotion dial upgrade pulls `superb/hubert-large-superb-er`. The helper script below pre-fetches all three.
 
 ---
 
