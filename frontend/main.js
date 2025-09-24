@@ -4,20 +4,15 @@ const startBtn = document.getElementById('start-btn');
 const modeBtn = document.getElementById('mode-btn');
 const resetBtn = document.getElementById('reset-btn');
 const linksBtn = document.getElementById('projection-btn');
-const valenceBar = document.getElementById('valence-bar');
-const arousalBar = document.getElementById('arousal-bar');
-const keywordList = document.getElementById('keyword-list');
 const diagnosticsList = document.getElementById('diagnostics');
 const modePill = document.getElementById('mode-pill');
 const transcriptText = document.getElementById('transcript-text');
-const emotionLabel = document.getElementById('emotion-label');
 
 const state = {
   stars: [],
   connections: [],
-  nebula: { hue: 210, intensity: 0.3, label: 'neutral', valence: 0.5, arousal: 0.5 },
+  nebula: { hue: 210, intensity: 0.3, level: 0.5 },
   themes: [],
-  keywords: [],
   transcript: '',
   diagnostics: {},
   mode: 'analysis',
@@ -194,46 +189,21 @@ function handleMessage(message) {
     state.diagnostics = data.meta?.diagnostics || {};
     state.mode = data.meta?.mode || state.mode;
     state.transcript = data.meta?.transcript || '';
-    state.keywords = data.meta?.keywords || [];
     state.themes = data.meta?.themes || [];
-    updateBars();
     updateTranscript();
-    updateKeywords();
     updateThemes();
     updateDiagnostics();
-    updateEmotionLabel();
     updateModeUI();
     return;
   }
 }
 
-function updateBars() {
-  const clamp = (value) => Math.max(0, Math.min(1, value));
-  valenceBar.style.transform = `scaleX(${clamp(state.nebula.valence ?? 0.5)})`;
-  arousalBar.style.transform = `scaleX(${clamp(state.nebula.arousal ?? 0.5)})`;
-}
-
 function updateTranscript() {
-  const text = state.transcript && state.transcript.trim() ? state.transcript.trim() : 'Listening…';
+  const trimmed = state.transcript && state.transcript.trim();
+  const text = trimmed && trimmed.length
+    ? trimmed
+    : 'Enable whisper-tiny to see live transcripts.';
   transcriptText.textContent = text;
-}
-
-function updateKeywords() {
-  keywordList.innerHTML = '';
-  const items = state.keywords.slice(-6);
-  if (items.length === 0) {
-    const li = document.createElement('li');
-    li.textContent = '—';
-    li.style.opacity = 0.4;
-    keywordList.appendChild(li);
-    return;
-  }
-  items.forEach((item) => {
-    const li = document.createElement('li');
-    li.textContent = item.text.toUpperCase();
-    li.style.opacity = item.confidence ?? 0.8;
-    keywordList.appendChild(li);
-  });
 }
 
 function updateThemes() {
@@ -262,7 +232,6 @@ function updateDiagnostics() {
     { label: 'Semantic plane', value: state.diagnostics.projector_ready },
     { label: 'Speaker clusters', value: state.diagnostics.speaker_ready },
     { label: 'Whisper', value: state.diagnostics.keyword_ready },
-    { label: 'Emotion', value: state.diagnostics.emotion_ready },
   ];
   entries.forEach((entry) => {
     const li = document.createElement('li');
@@ -270,14 +239,6 @@ function updateDiagnostics() {
     li.innerHTML = `<span style="color:${ok ? 'rgba(125, 211, 252, 0.95)' : 'rgba(251, 191, 36, 0.85)'};font-weight:600">●</span> ${entry.label}: ${ok ? 'online' : 'warming'}`;
     diagnosticsList.appendChild(li);
   });
-}
-
-function updateEmotionLabel() {
-  const label = state.nebula.label || 'Unknown';
-  const conf = state.nebula.confidence ? `${Math.round(state.nebula.confidence * 100)}%` : '';
-  const level = state.nebula.level ?? 0.5;
-  const pct = Math.round(level * 100);
-  emotionLabel.textContent = `Emotion energy: ${pct}%`;
 }
 
 function updateModeUI() {
@@ -490,9 +451,6 @@ function applyAlpha(color, alpha) {
 
 updateButtons();
 updateModeUI();
-updateKeywords();
 updateThemes();
 updateDiagnostics();
-updateBars();
 updateTranscript();
-updateEmotionLabel();

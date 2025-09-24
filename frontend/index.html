@@ -27,26 +27,18 @@
         <div id="canvas-overlay"></div>
       </div>
       <aside class="sidebar">
-        <section class="panel emotion">
-          <h2>Emotion Dial</h2>
-          <div class="meter">
-            <span>Valence</span>
-            <div class="bar"><div id="valence-bar"></div></div>
-          </div>
-          <div class="meter">
-            <span>Arousal</span>
-            <div class="bar"><div id="arousal-bar"></div></div>
-          </div>
+        <section class="panel legend">
+          <h2>Legend</h2>
+          <ul class="legend-list">
+            <li><span class="legend-dot semantic"></span>Position: L10 semantic plane</li>
+            <li><span class="legend-dot energy"></span>Colour & pulse: L6 emotion energy</li>
+            <li><span class="legend-dot rhythm"></span>Rhythm bars: L2 cadence</li>
+          </ul>
           <div class="mode-pill" id="mode-pill">Mode: Analysis</div>
-          <div class="emotion-label" id="emotion-label">Emotion: —</div>
         </section>
         <section class="panel transcript">
           <h2>Transcript</h2>
-          <div id="transcript-text" class="transcript-text">Listening… (enable Whisper for full sentences)</div>
-        </section>
-        <section class="panel keywords">
-          <h2>Keywords</h2>
-          <ul id="keyword-list"></ul>
+          <div id="transcript-text" class="transcript-text">Enable whisper-tiny to see live transcripts.</div>
         </section>
         <section class="panel themes">
           <h2>Constellations</h2>

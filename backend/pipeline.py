@@ -51,7 +51,6 @@ class Diagnostics:
     projector_ready: bool
     speaker_ready: bool
     keyword_ready: bool
-    emotion_ready: bool
 
 
 class CometPipeline:
@@ -388,7 +387,6 @@ class CometPipeline:
             projector_ready=projector_ready,
             speaker_ready=self.speaker_clusterer.is_ready,
             keyword_ready=self.keyword_extractor._ready,
-            emotion_ready=True,
         )
 
         stars_list = list(self.stars)[-120:]
