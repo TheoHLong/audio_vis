@@ -1,12 +1,12 @@
-# Speech → Constellation
+# Speech → Neural Trajectories
 
-A live “speech-to-visuals” experience where microphone input becomes a constellation: semantic position (WavLM L10) sets the star map, Layer 6 energy colours emotion, and Layer 2 drives rhythmic pulses. Whisper keywords annotate constellations; a nebula backdrop breathes with affect.
+A live “speech-to-visuals” experience where microphone input becomes a layered 3D line chart: Layer 10 positions semantic trajectories, Layer 6 controls pulse height, and Layer 2 colours segments by speaker voiceprint. Whisper transcripts remain available for context.
 
 ---
 
 ## What you get
 
-- **Constellation Builder** – Stars spawn from speech with L10-driven positions, speaker colours from L2 voiceprints, L6-based pulsing, and bottom-bar rhythm pulses. Connection lines combine semantic + acoustic proximity, and the nebula breathes with L6 energy.
+- **Neural Trajectory Plot** – Streamed WavLM layers become a 3D-style line chart: X = time, Y = neuron index, Z = activity. L10 positions guide the path, L2 colours segments by speaker voiceprint, and L6 controls pulse amplitude.
 - **Layer separation** – L10 feeds the frozen semantic plane (spatial clusters), L2 encodes speaker voiceprints (star colour + connection affinity), and L6 drives star pulsing / nebula energy.
 - **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Only ~120 recent stars are streamed so updates stay live.
 - **Live transcript & constellations** – Whisper tiny surfaces rolling transcripts, keyword labels, and a “constellations” sidebar with recurring themes.
@@ -84,7 +84,7 @@ Visit [http://localhost:8000](http://localhost:8000) and grant microphone access
 
 - **Start Listening** toggles the mic stream.
 - **Performance Mode** adjusts visual gain.
-- **Show/Hide Links** toggles semantic connections.
+- **Show/Hide Grid** toggles auxiliary guide/grid lines in the 3D projection.
 - **Reset** clears stars/labels for a fresh constellation.
 
 ### Visual encodings
@@ -95,8 +95,6 @@ Visit [http://localhost:8000](http://localhost:8000) and grant microphone access
 | Speaker identity | L2 voiceprint clustering      | Star colour                      |
 | Prosody energy   | L6 norm & variation           | Star pulsing & nebula intensity  |
 | Loudness         | RMS (waveform)                | Star brightness / baseline size  |
-| Rhythm pulses    | L2 RMS beats                  | Bottom metronome bars            |
-| Keywords/themes  | Whisper tiny                  | Star labels & constellation list |
 | Transcript       | Whisper tiny                  | Rolling text panel               |
 
 Diagnostics show when the semantic plane, speaker clustering, or Whisper probe are warming up (≈6 s).

@@ -24,7 +24,8 @@ class PipelineConfig:
     keyword_stride_seconds: float = 0.4
 
     semantic_projector_path: Optional[str] = None
-    star_interval_seconds: float = 0.6
+    activity_neurons: int = 64
+    activity_history_seconds: float = 15.0
 
     @property
     def frame_size(self) -> int:

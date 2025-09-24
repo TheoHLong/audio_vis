@@ -14,7 +14,7 @@ from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 
 from .config import PipelineConfig
 from .keywords import KeywordCandidate, KeywordExtractor
-from .projection import FrozenSemanticProjector, IncrementalProjector, SpeakerClusterer
+from .projection import FrozenSemanticProjector, SpeakerClusterer
 from .utils import (
     RollingStat,
     ema_update,
@@ -25,27 +25,6 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class FrameDescriptor:
-    index: int
-    timestamp: float
-    xy: np.ndarray
-    speaker: int
-    rms: float
-    rms_norm: float
-    pitch: float
-    pitch_norm: float
-    semantic_intensity: float
-    semantic_norm: float
-    emotion_level: float
-    tail_alpha: float
-    line_width: float
-    glow: float
-    particle: bool
-    acoustic_signature: np.ndarray
-    semantic_vector: np.ndarray
 
 
 @dataclass
@@ -98,14 +77,6 @@ class CometPipeline:
                 logger.warning("Failed to load semantic projector '%s': %s", semantic_path, exc)
                 self.semantic_projector = None
 
-        self.projector = None
-        if self.semantic_projector is None:
-            self.projector = IncrementalProjector(
-                input_dim=hidden_dim,
-                primary_components=self.config.primary_pca_components,
-                display_components=self.config.display_components,
-            )
-
         self.speaker_clusterer = SpeakerClusterer(feature_dim=hidden_dim, clusters=self.config.speaker_cluster_count)
 
         self.keyword_extractor = KeywordExtractor(
@@ -117,37 +88,29 @@ class CometPipeline:
 
         self.frame_buffer = np.zeros(0, dtype=np.float32)
         self.frame_index = 0
-        self.tail: Deque[FrameDescriptor] = deque(maxlen=int(self.config.frames_per_second * self.config.tail_seconds * 3))
         self.last_emit_timestamp = 0.0
-        self.stars: Deque[dict] = deque(maxlen=120)
-        self.last_star_timestamp = -1.0
-        self.rhythm_pulses: Deque[dict] = deque(maxlen=80)
+        history_frames = max(10, int(self.config.activity_history_seconds * self.config.frames_per_second))
+        self.layer_buffers: Dict[str, Deque[dict]] = {
+            "L2": deque(maxlen=history_frames),
+            "L6": deque(maxlen=history_frames),
+            "L10": deque(maxlen=history_frames),
+        }
 
         hop_seconds = self.config.hop_size / self.config.sample_rate
         tau = max(1e-3, self.config.ema_tau_seconds)
         self.ema_alpha = 1.0 - math.exp(-hop_seconds / tau)
-        self.position_state: Optional[np.ndarray] = None
-        if self.semantic_projector is not None:
-            display_dim = self.semantic_projector.semantic_pca_components.shape[0]
-        elif self.projector is not None:
-            display_dim = self.projector.display.n_components
-        else:
-            display_dim = self.config.display_components
-        self.position_range = np.ones(display_dim) * 1e-2
 
         self.rms_ema = math.nan
         self.pitch_ema = math.nan
         self.semantic_ema = math.nan
-        self.prev_rms = None
 
         self.rms_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
         self.pitch_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
         self.semantic_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
         self.l6_tracker = RollingStat(window_seconds=3.0, sample_rate=self.config.frames_per_second)
-
         self.palette = [
-            "#60a5fa",
-            "#34d399",
+            "#6366f1",
+            "#22d3ee",
             "#f97316",
             "#a855f7",
             "#ef4444",
@@ -156,7 +119,7 @@ class CometPipeline:
             "#818cf8",
             "#fb7185",
         ]
-        self.default_color = "#4b5563"
+        self.default_color = "#94a3b8"
         self.speaker_colors: Dict[int, str] = {}
         self.next_color_index = 0
 
@@ -174,24 +137,22 @@ class CometPipeline:
         hop_size = self.config.hop_size
 
         emitted = None
+        last_ts = self.last_emit_timestamp
         while self.frame_buffer.shape[0] >= frame_size:
             frame = self.frame_buffer[:frame_size]
             self.frame_buffer = self.frame_buffer[hop_size:]
-            descriptor = self._process_frame(frame)
-            if descriptor:
-                self.tail.append(descriptor)
-                self._trim_tail(descriptor.timestamp)
+            timestamp = self.frame_index * (self.config.hop_size / self.config.sample_rate)
+            self._process_frame(frame, timestamp)
             self.frame_index += 1
+            last_ts = timestamp
 
-        if self.tail:
-            now_ts = self.tail[-1].timestamp
-            if now_ts - self.last_emit_timestamp >= self.config.refresh_interval:
-                emitted = self._build_payload(now_ts)
-                self.last_emit_timestamp = now_ts
+        if last_ts and last_ts - self.last_emit_timestamp >= self.config.refresh_interval:
+            emitted = self._build_payload(last_ts)
+            self.last_emit_timestamp = last_ts
         return emitted
 
     # ------------------------------------------------------------------
-    def _process_frame(self, frame: np.ndarray) -> Optional[FrameDescriptor]:
+    def _process_frame(self, frame: np.ndarray, timestamp: float) -> None:
         rms_value = rms(frame)
         pitch_value = estimate_pitch_yin(frame, self.config.sample_rate)
 
@@ -228,19 +189,13 @@ class CometPipeline:
         acoustic_signature = (l2_vec / l2_norm)[:8].astype(np.float32)
         semantic_vector = l10_vec[:24].astype(np.float32)
 
-        if self.semantic_projector is not None:
-            projected = self.semantic_projector.transform(l10_vec)
-        else:
-            projected = self.projector.update(l6_vec)
-        self.position_range = np.maximum(self.position_range * 0.995, np.abs(projected) + 1e-3)
-        normalized = projected / self.position_range
-        if self.position_state is None:
-            self.position_state = normalized
-        else:
-            self.position_state = (1.0 - self.ema_alpha) * self.position_state + self.ema_alpha * normalized
-
         speaker_id = self.speaker_clusterer.update(l2_vec)
 
+        self.keyword_extractor.append(frame)
+        keywords = self.keyword_extractor.maybe_extract(timestamp)
+        if keywords:
+            # keep keywords for later payload building
+            self.keywords_cache = keywords
         rms_norm = normalize(rms_value, self.rms_tracker.min(), self.rms_tracker.max() + 1e-6)
         pitch_norm = normalize(pitch_value, self.pitch_tracker.min(), self.pitch_tracker.max() + 1e-6)
         semantic_norm = normalize(
@@ -249,124 +204,53 @@ class CometPipeline:
             self.semantic_tracker.max() + 1e-6,
         )
 
-        tail_alpha = softclip(0.25 + semantic_norm * 0.75, 0.2, 1.0)
-        line_width = softclip(0.8 + (rms_norm ** 1.4) * 3.2, 0.8, 6.0)
-        glow = softclip(0.3 + pitch_norm * 0.8, 0.2, 1.0)
-
-        particle = False
-        if self.prev_rms is not None and self.rms_ema and not math.isnan(self.rms_ema):
-            surge = (rms_value - self.rms_ema) / (self.rms_ema + 1e-6)
-            if surge > 0.8 and rms_value > self.prev_rms * 1.1:
-                particle = True
-        self.prev_rms = rms_value
-
-        timestamp = self.frame_index * (self.config.hop_size / self.config.sample_rate)
-
-        self.keyword_extractor.append(frame)
-        keywords = self.keyword_extractor.maybe_extract(timestamp)
-        if keywords:
-            # keep keywords for later payload building
-            self.keywords_cache = keywords
-
-        descriptor = FrameDescriptor(
-            index=self.frame_index,
-            timestamp=timestamp,
-            xy=self.position_state.copy(),
-            speaker=speaker_id,
-            rms=rms_value,
-            rms_norm=rms_norm,
-            pitch=pitch_value,
-            pitch_norm=pitch_norm,
-            semantic_intensity=semantic_intensity,
-            semantic_norm=semantic_norm,
-            emotion_level=l6_norm,
-            tail_alpha=tail_alpha,
-            line_width=line_width,
-            glow=glow,
-            particle=particle,
-            acoustic_signature=acoustic_signature,
-            semantic_vector=semantic_vector,
-        )
-
-        self._maybe_add_star(descriptor)
-        self._update_rhythm(descriptor)
-
-        return descriptor
+        self._record_activity("L2", timestamp, l2_vec, speaker_id, rms=rms_norm)
+        self._record_activity("L6", timestamp, l6_vec, speaker_id, energy=l6_norm, pitch=pitch_norm)
+        self._record_activity("L10", timestamp, l10_vec, speaker_id, semantics=semantic_norm)
 
     # ------------------------------------------------------------------
-    def _trim_tail(self, timestamp: float) -> None:
-        threshold = timestamp - self.config.tail_seconds
-        while self.tail and self.tail[0].timestamp < threshold:
-            self.tail.popleft()
-
-    # ------------------------------------------------------------------
-    def _maybe_add_star(self, descriptor: FrameDescriptor) -> None:
-        interval = max(1e-3, self.config.star_interval_seconds)
-        if self.last_star_timestamp >= 0.0 and descriptor.timestamp - self.last_star_timestamp < interval:
+    def _record_activity(
+        self,
+        layer: str,
+        timestamp: float,
+        vector: np.ndarray,
+        speaker_id: int,
+        **extras: float,
+    ) -> None:
+        truncated = vector[: self.config.activity_neurons].astype(np.float32)
+        if truncated.size == 0:
             return
+        energies = np.abs(truncated)
+        idx = int(np.argmax(energies))
+        activity = float(truncated[idx])
 
-        theme = None
-        if self.keywords_cache:
-            theme = self.keywords_cache[-1].text
+        buffer = self.layer_buffers[layer]
+        if buffer:
+            prev = buffer[-1]
+            idx = 0.7 * float(prev["index"]) + 0.3 * idx
+            activity = 0.7 * float(prev["activity"]) + 0.3 * activity
 
-        color = self._color_for_speaker(descriptor.speaker)
-        brightness = round(0.45 + descriptor.semantic_norm * 0.4, 4)
-        pulse_rate = round(0.8 + descriptor.emotion_level * 1.8, 3)
-        twinkle_amp = round(0.4 + descriptor.emotion_level * 0.6, 3)
-        star = {
-            "id": int(descriptor.index),
-            "t": round(descriptor.timestamp, 3),
-            "x": round(float(descriptor.xy[0]), 4),
-            "y": round(float(descriptor.xy[1]), 4),
-            "brightness": brightness,
-            "twinkle": twinkle_amp,
-            "pulse_rate": pulse_rate,
-            "semantic": round(softclip(descriptor.semantic_norm, 0.0, 1.0), 4),
-            "color": color,
-            "theme": theme,
-            "emotion_level": round(descriptor.emotion_level, 3),
-            "speaker": descriptor.speaker,
-            "acoustic": descriptor.acoustic_signature.tolist(),
-            "semantic_vec": descriptor.semantic_vector.tolist(),
+        entry = {
+            "t": timestamp,
+            "index": float(idx),
+            "activity": float(activity),
+            "vector": truncated.tolist(),
+            "speaker": int(speaker_id) if speaker_id >= 0 else None,
         }
-        self.stars.append(star)
-        self.last_star_timestamp = descriptor.timestamp
-
-    # ------------------------------------------------------------------
-    def _update_rhythm(self, descriptor: FrameDescriptor) -> None:
-        strength = descriptor.rms_norm
-        if self.prev_rms is None:
-            return
-        if strength > 0.45 and strength > self.prev_rms + 0.05:
-            self.rhythm_pulses.append({
-                "t": round(descriptor.timestamp, 3),
-                "strength": round(softclip(strength, 0.0, 1.0), 3),
-            })
+        entry.update({k: float(v) for k, v in extras.items()})
+        if entry["speaker"] is not None:
+            self._color_for_speaker(entry["speaker"])
+        buffer.append(entry)
 
     # ------------------------------------------------------------------
     def _color_for_speaker(self, speaker: int) -> str:
-        if speaker < 0:
+        if speaker is None or speaker < 0:
             return self.default_color
         if speaker not in self.speaker_colors:
             color = self.palette[self.next_color_index % len(self.palette)]
             self.speaker_colors[speaker] = color
             self.next_color_index += 1
         return self.speaker_colors[speaker]
-
-    # ------------------------------------------------------------------
-    def _color_from_emotion_level(self, level: float) -> str:
-        lvl = softclip(level, 0.0, 1.0)
-        calm = np.array([88, 162, 255])
-        mid = np.array([255, 205, 102])
-        intense = np.array([255, 80, 80])
-        if lvl < 0.5:
-            alpha = lvl / 0.5
-            rgb = (1 - alpha) * calm + alpha * mid
-        else:
-            alpha = (lvl - 0.5) / 0.5
-            rgb = (1 - alpha) * mid + alpha * intense
-        rgb = np.clip(rgb, 0, 255).astype(int)
-        return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
 
     # ------------------------------------------------------------------
     def _build_payload(self, now_ts: float) -> dict:
@@ -394,25 +278,37 @@ class CometPipeline:
             keyword_ready=self.keyword_extractor._ready,
         )
 
-        stars_list = list(self.stars)[-120:]
-        connections = self._build_connections(stars_list)
-        nebula = self._build_nebula(np.mean([star.get("emotion_level", 0.5) for star in stars_list[-20:]] or [0.5]))
-        themes = self._collect_themes(stars_list)
-        rhythm = list(self.rhythm_pulses)[-40:]
+        layers_payload = []
+        for name, buffer in self.layer_buffers.items():
+            if not buffer:
+                continue
+            base_time = buffer[0]["t"]
+            times = [round(entry["t"] - base_time, 3) for entry in buffer]
+            indices = [round(entry["index"], 3) for entry in buffer]
+            activities = [round(entry["activity"], 4) for entry in buffer]
+            vectors = [entry["vector"] for entry in buffer]
+            speakers = [entry.get("speaker") for entry in buffer]
+            layers_payload.append(
+                {
+                    "name": name,
+                    "times": times,
+                    "indices": indices,
+                    "activities": activities,
+                    "vectors": vectors,
+                    "speakers": speakers,
+                }
+            )
 
         payload = {
-            "type": "constellation",
+            "type": "layer_activity",
             "timestamp": round(now_ts, 3),
-            "stars": stars_list,
-            "connections": connections,
-            "nebula": nebula,
-            "rhythm": rhythm,
+            "layers": layers_payload,
             "meta": {
                 "diagnostics": diagnostics.__dict__,
                 "mode": self.mode,
                 "transcript": transcript,
                 "keywords": keywords_payload,
-                "themes": themes,
+                "speaker_colors": {str(k): v for k, v in self.speaker_colors.items()},
             },
         }
         return payload
@@ -430,24 +326,17 @@ class CometPipeline:
     # ------------------------------------------------------------------
     def reset(self) -> None:
         logger.info("Resetting pipeline state")
-        self.tail.clear()
         self.frame_buffer = np.zeros(0, dtype=np.float32)
         self.frame_index = 0
-        self.position_state = None
-        if self.semantic_projector is not None:
-            display_dim = self.semantic_projector.semantic_pca_components.shape[0]
-        elif self.projector is not None:
-            display_dim = self.projector.display.n_components
-        else:
-            display_dim = self.config.display_components
-        self.position_range = np.ones(display_dim) * 1e-2
         self.rms_ema = math.nan
         self.pitch_ema = math.nan
         self.semantic_ema = math.nan
-        self.prev_rms = None
         self.rms_tracker.reset()
         self.pitch_tracker.reset()
         self.semantic_tracker.reset()
+        self.l6_tracker.reset()
+        for buffer in self.layer_buffers.values():
+            buffer.clear()
         self.keywords_cache.clear()
         if hasattr(self.keyword_extractor, "_buffer"):
             self.keyword_extractor._buffer = np.zeros(0, dtype=np.float32)
@@ -456,88 +345,3 @@ class CometPipeline:
                 self.keyword_extractor._transcript_history = []
                 self.keyword_extractor.last_transcript = ""
                 self.keyword_extractor._prev_transcript = ""
-        self.stars.clear()
-        self.last_star_timestamp = -1.0
-        self.rhythm_pulses.clear()
-
-    # ------------------------------------------------------------------
-    def _build_connections(self, stars: List[dict]) -> List[dict]:
-        if len(stars) < 2:
-            return []
-        recent = stars[-60:]
-        acoustic_vecs: List[Optional[np.ndarray]] = []
-        semantic_vecs: List[Optional[np.ndarray]] = []
-        for star in recent:
-            a_sig = np.asarray(star.get("acoustic"), dtype=np.float32)
-            s_sig = np.asarray(star.get("semantic_vec"), dtype=np.float32)
-            acoustic_vecs.append(a_sig if a_sig.size else None)
-            semantic_vecs.append(s_sig if s_sig.size else None)
-
-        connections = []
-        added = set()
-        for idx, star in enumerate(recent):
-            a_i = acoustic_vecs[idx]
-            s_i = semantic_vecs[idx]
-            if a_i is None and s_i is None:
-                continue
-            candidates: list[tuple[int, float, float]] = []
-            for jdx, other in enumerate(recent):
-                if idx == jdx:
-                    continue
-                a_j = acoustic_vecs[jdx]
-                s_j = semantic_vecs[jdx]
-                if a_j is None and s_j is None:
-                    continue
-                acoustic_sim = 0.0
-                if a_i is not None and a_j is not None:
-                    acoustic_sim = float(np.dot(a_i, a_j) / ((np.linalg.norm(a_i) + 1e-8) * (np.linalg.norm(a_j) + 1e-8)))
-                semantic_sim = 0.0
-                if s_i is not None and s_j is not None:
-                    semantic_sim = float(np.dot(s_i, s_j) / ((np.linalg.norm(s_i) + 1e-8) * (np.linalg.norm(s_j) + 1e-8)))
-                combined = 0.45 * (semantic_sim + 1) / 2 + 0.45 * (acoustic_sim + 1) / 2
-                if star.get("speaker") is not None and star.get("speaker") == other.get("speaker"):
-                    combined += 0.1
-                candidates.append((jdx, combined, semantic_sim))
-            candidates.sort(key=lambda item: item[1], reverse=True)
-            for jdx, combined, semantic_sim in candidates[:2]:
-                if combined <= 0:
-                    continue
-                a = star["id"]
-                b = recent[jdx]["id"]
-                key = tuple(sorted((a, b)))
-                if key in added:
-                    continue
-                width = 1.0 + combined * 3.0
-                line_style = "solid" if star.get("speaker") == recent[jdx].get("speaker") else "dashed"
-                connections.append({
-                    "source": a,
-                    "target": b,
-                    "strength": round(softclip(combined, 0.0, 1.0), 3),
-                    "width": round(width, 2),
-                    "style": line_style,
-                })
-                added.add(key)
-        return connections
-
-    # ------------------------------------------------------------------
-    def _build_nebula(self, emotion_level: float) -> dict:
-        level = softclip(emotion_level, 0.0, 1.0)
-        hue = 220 - level * 180
-        intensity = 0.2 + level * 0.55
-        return {
-            "hue": round(float(hue), 3),
-            "intensity": round(float(intensity), 3),
-            "level": round(level, 3),
-        }
-
-    # ------------------------------------------------------------------
-    def _collect_themes(self, stars: List[dict]) -> List[dict]:
-        themes: Dict[str, int] = {}
-        for star in stars[-100:]:
-            theme = star.get("theme")
-            if not theme:
-                continue
-            key = theme.lower()
-            themes[key] = themes.get(key, 0) + 1
-        top = sorted(themes.items(), key=lambda item: item[1], reverse=True)[:5]
-        return [{"text": theme, "count": count} for theme, count in top]
