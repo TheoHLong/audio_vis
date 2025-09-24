@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional
@@ -14,7 +15,7 @@ from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 from .config import PipelineConfig
 from .emotion import EmotionAnalyzer, EmotionState
 from .keywords import KeywordCandidate, KeywordExtractor
-from .projection import IncrementalProjector, SpeakerClusterer
+from .projection import FrozenSemanticProjector, IncrementalProjector, SpeakerClusterer
 from .utils import (
     RollingStat,
     ema_update,
@@ -85,11 +86,25 @@ class CometPipeline:
         self.model.eval()
 
         hidden_dim = self.model.config.hidden_size
-        self.projector = IncrementalProjector(
-            input_dim=hidden_dim,
-            primary_components=self.config.primary_pca_components,
-            display_components=self.config.display_components,
-        )
+
+        semantic_path = self.config.semantic_projector_path or os.environ.get("SEMANTIC_PROJECTION_PATH")
+        self.semantic_projector: Optional[FrozenSemanticProjector] = None
+        if semantic_path:
+            try:
+                self.semantic_projector = FrozenSemanticProjector(semantic_path)
+                logger.info("Loaded semantic projector from %s", semantic_path)
+            except Exception as exc:  # pragma: no cover - runtime artifact issues
+                logger.warning("Failed to load semantic projector '%s': %s", semantic_path, exc)
+                self.semantic_projector = None
+
+        self.projector = None
+        if self.semantic_projector is None:
+            self.projector = IncrementalProjector(
+                input_dim=hidden_dim,
+                primary_components=self.config.primary_pca_components,
+                display_components=self.config.display_components,
+            )
+
         self.speaker_clusterer = SpeakerClusterer(feature_dim=hidden_dim, clusters=self.config.speaker_cluster_count)
 
         self.keyword_extractor = KeywordExtractor(
@@ -113,7 +128,13 @@ class CometPipeline:
         tau = max(1e-3, self.config.ema_tau_seconds)
         self.ema_alpha = 1.0 - math.exp(-hop_seconds / tau)
         self.position_state: Optional[np.ndarray] = None
-        self.position_range = np.ones(self.projector.display_components) * 1e-2
+        if self.semantic_projector is not None:
+            display_dim = self.semantic_projector.semantic_pca_components.shape[0]
+        elif self.projector is not None:
+            display_dim = self.projector.display.n_components
+        else:
+            display_dim = self.config.display_components
+        self.position_range = np.ones(display_dim) * 1e-2
 
         self.rms_ema = math.nan
         self.pitch_ema = math.nan
@@ -197,7 +218,10 @@ class CometPipeline:
         self.semantic_tracker.update(semantic_intensity)
         self.semantic_ema = ema_update(self.semantic_ema, semantic_intensity, self.ema_alpha)
 
-        projected = self.projector.update(l6_vec)
+        if self.semantic_projector is not None:
+            projected = self.semantic_projector.transform(l10_vec)
+        else:
+            projected = self.projector.update(l6_vec)
         self.position_range = np.maximum(self.position_range * 0.995, np.abs(projected) + 1e-3)
         normalized = projected / self.position_range
         if self.position_state is None:
@@ -329,8 +353,10 @@ class CometPipeline:
             for token in keywords
         ]
 
+        projector_ready = True if self.semantic_projector is not None else (self.projector._display_ready if self.projector else False)
+
         diagnostics = Diagnostics(
-            projector_ready=self.projector._display_ready,
+            projector_ready=projector_ready,
             speaker_ready=self.speaker_clusterer.is_ready,
             keyword_ready=self.keyword_extractor._ready,
             emotion_ready=self.emotion_analyzer.is_ready,
@@ -372,7 +398,13 @@ class CometPipeline:
         self.frame_buffer = np.zeros(0, dtype=np.float32)
         self.frame_index = 0
         self.position_state = None
-        self.position_range = np.ones(self.projector.display_components) * 1e-2
+        if self.semantic_projector is not None:
+            display_dim = self.semantic_projector.semantic_pca_components.shape[0]
+        elif self.projector is not None:
+            display_dim = self.projector.display.n_components
+        else:
+            display_dim = self.config.display_components
+        self.position_range = np.ones(display_dim) * 1e-2
         self.rms_ema = math.nan
         self.pitch_ema = math.nan
         self.semantic_ema = math.nan

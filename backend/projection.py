@@ -9,6 +9,28 @@ from sklearn.decomposition import IncrementalPCA
 
 
 @dataclass
+class FrozenSemanticProjector:
+    """Deterministic semantic projector trained offline."""
+
+    artifact_path: str
+
+    def __post_init__(self) -> None:
+        blob = np.load(self.artifact_path)
+        self.feature_mean = blob["feature_mean"]
+        self.feature_scale = blob["feature_scale"]
+        self.ridge_coef = blob["ridge_coef"]
+        self.ridge_intercept = blob["ridge_intercept"]
+        self.semantic_pca_components = blob["semantic_pca_components"]
+        self.semantic_pca_mean = blob["semantic_pca_mean"]
+
+    def transform(self, feature_vector: np.ndarray) -> np.ndarray:
+        z = (feature_vector - self.feature_mean) / (self.feature_scale + 1e-8)
+        semantic = z @ self.ridge_coef.T + self.ridge_intercept
+        coords = (semantic - self.semantic_pca_mean) @ self.semantic_pca_components.T
+        return coords.astype(np.float32)
+
+
+@dataclass
 class IncrementalProjector:
     """Incremental PCA projector that streams high-d vectors to 2D."""
 

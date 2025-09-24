@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -24,6 +25,8 @@ class PipelineConfig:
 
     emotion_update_seconds: float = 1.2
     emotion_window_seconds: float = 1.6
+
+    semantic_projector_path: Optional[str] = None
 
     @property
     def frame_size(self) -> int:
