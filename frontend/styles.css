@@ -90,17 +90,16 @@ button:hover {
   box-shadow: inset 0 0 50px rgba(15, 23, 42, 0.7), 0 40px 80px rgba(2, 6, 23, 0.45);
 }
 
-#comet-canvas {
+#visual-container {
   width: 100%;
-  height: 600px;
-  display: block;
+  height: 620px;
+  position: relative;
 }
 
-#canvas-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(circle at center, rgba(96, 165, 250, 0.05), transparent 65%);
+@media (max-width: 720px) {
+  #visual-container {
+    height: 440px;
+  }
 }
 
 .sidebar {

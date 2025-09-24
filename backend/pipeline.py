@@ -186,10 +186,6 @@ class CometPipeline:
             self.l6_tracker.min(),
             self.l6_tracker.max() + 1e-6,
         )
-        l2_norm = np.linalg.norm(l2_vec) + 1e-6
-        acoustic_signature = (l2_vec / l2_norm)[:8].astype(np.float32)
-        semantic_vector = l10_vec[:24].astype(np.float32)
-
         speaker_id = self.speaker_clusterer.update(l2_vec)
 
         self.keyword_extractor.append(frame)
@@ -289,7 +285,7 @@ class CometPipeline:
             times = [round(entry["t"] - base_time, 3) for entry in buffer]
             indices = [round(entry["index"], 3) for entry in buffer]
             activities = [round(entry["activity"], 4) for entry in buffer]
-            vectors = [entry["vector"] for entry in buffer]
+        vectors = [entry["vector"] for entry in buffer]
             speakers = [entry.get("speaker") for entry in buffer]
             layers_payload.append(
                 {

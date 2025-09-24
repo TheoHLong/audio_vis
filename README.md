@@ -7,8 +7,9 @@ A live “speech-to-visuals” experience where microphone input becomes a layer
 ## What you get
 
 - **Neural Trajectory Plot** – Streamed WavLM layers become a 3D-style line chart: X = time, Y = neuron index, Z = activity. L10 positions guide the path, L2 colours segments by speaker voiceprint, and L6 controls pulse amplitude.
-- **Layer separation** – L10 feeds the frozen semantic plane (spatial clusters), L2 encodes speaker voiceprints (star colour + connection affinity), and L6 drives star pulsing / nebula energy.
-- **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Only ~120 recent stars are streamed so updates stay live.
+- **Audio backplane** – A teal waveform ridge anchored beneath the neural layers keeps the raw signal in view for timing/context.
+- **Layer separation** – L10 forms the top semantic ridge, L6 draws the prosodic ridge, and L2 renders the voiceprint ridge; all three update frame-by-frame.
+- **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Histories are capped (~15 s) so the ridge surfaces flow smoothly without lag.
 - **Live transcript overlay** – Whisper tiny can still stream rolling transcripts for context; interface degrades gracefully without it.
 - **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, and Whisper.
 
@@ -20,13 +21,13 @@ A live “speech-to-visuals” experience where microphone input becomes a layer
 backend/
   config.py           # Pipeline configuration
   main.py             # FastAPI app + websocket
-  pipeline.py         # Streaming WavLM → constellation payloads
+  pipeline.py         # Streaming WavLM → layer activity payloads
   projection.py       # Frozen semantic projector / incremental PCA fallback
   keywords.py         # Whisper keyword probe
   utils.py            # DSP helpers (RMS, YIN, EMA)
 frontend/
   index.html          # UI shell
-  main.js             # Constellation renderer + audio capture
+  main.js             # Neural ridge renderer + audio capture
   styles.css          # Styling
 scripts/
   download_models.py  # Pre-fetch WavLM + Whisper
@@ -139,6 +140,7 @@ Drop the artefact into `SEMANTIC_PROJECTION_PATH` and restart the server.
 - **Layer separation** – L10 ridge tracks semantics, L6 ridge shows prosodic energy, and L2 ridge highlights voiceprint changes. All three are updated frame-by-frame from WavLM.
 - **Optional projector** – You can still supply a frozen L10 projector to stabilise neuron selection; the pipeline falls back gracefully if none is provided.
 - **Streaming efficiency** – Layer histories are capped (≈15 s) and payloads stay small; updates go out roughly 6 Hz for smooth animation.
+- **Three.js surfaces** – A WebGL scene renders translucent ridges with orbit controls and an optional guide grid overlay.
 - **Keyword resilience** – If Whisper weights are missing, the UI shows placeholders but continues plotting trajectories.
 
 ---
