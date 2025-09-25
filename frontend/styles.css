@@ -169,7 +169,7 @@ button:hover {
 
 
 .legend-dot.heatmap {
-  background: linear-gradient(135deg, #0f172a, #2563eb 40%, #0ea5e9 70%, #fef3c7);
+  background: linear-gradient(135deg, #000083, #003caa 30%, #05ffff 55%, #ffff00 75%, #fa0000 90%, #800000);
 }
 
 .legend-dot.audio {

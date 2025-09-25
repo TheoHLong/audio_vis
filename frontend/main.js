@@ -20,10 +20,12 @@ const LAYER_CONFIG = {
 const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'waveform' };
 
 const HEATMAP_GRADIENT = [
-  { stop: 0.0, color: [12, 19, 36] },
-  { stop: 0.35, color: [37, 99, 235] },
-  { stop: 0.68, color: [16, 196, 167] },
-  { stop: 1.0, color: [245, 248, 255] },
+  { stop: 0.0, color: [0, 0, 131] },
+  { stop: 0.125, color: [0, 60, 170] },
+  { stop: 0.375, color: [5, 255, 255] },
+  { stop: 0.625, color: [255, 255, 0] },
+  { stop: 0.875, color: [250, 0, 0] },
+  { stop: 1.0, color: [128, 0, 0] },
 ];
 const HEATMAP_SIDE_MARGIN = 100;
 const HEATMAP_TOP_MARGIN = 100;
