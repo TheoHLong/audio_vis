@@ -1,7 +1,5 @@
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161/examples/jsm/controls/OrbitControls.js';
-
-const container = document.getElementById('visual-container');
+const canvas = document.getElementById('activity-canvas');
+const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('start-btn');
 const modeBtn = document.getElementById('mode-btn');
 const resetBtn = document.getElementById('reset-btn');
@@ -9,6 +7,18 @@ const gridBtn = document.getElementById('projection-btn');
 const diagnosticsList = document.getElementById('diagnostics');
 const modePill = document.getElementById('mode-pill');
 const transcriptText = document.getElementById('transcript-text');
+
+const TARGET_SAMPLE_RATE = 16_000;
+const MAX_NEURON_SAMPLES = 48;
+const HISTORY_SECONDS = 15;
+
+const LAYER_ORDER = ['L10', 'L6', 'L2'];
+const LAYER_CONFIG = {
+  L10: { color: '#a855f7', offset: 90, label: 'Layer 10 · semantics' },
+  L6: { color: '#f97316', offset: 55, label: 'Layer 6 · prosody' },
+  L2: { color: '#22d3ee', offset: 20, label: 'Layer 2 · voiceprint' },
+};
+const AUDIO_STYLE = { color: '#38bdf8', offset: -10, label: 'Audio waveform' };
 
 const state = {
   layers: [],
@@ -20,16 +30,6 @@ const state = {
   showGrid: true,
 };
 
-const TARGET_SAMPLE_RATE = 16_000;
-const HISTORY_SECONDS = 15;
-
-const LAYER_CONFIGS = {
-  L10: { color: '#a855f7', offset: 28, label: 'Layer 10 · semantics' },
-  L6: { color: '#f97316', offset: 14, label: 'Layer 6 · prosody' },
-  L2: { color: '#22d3ee', offset: 0, label: 'Layer 2 · voiceprint' },
-};
-const AUDIO_STYLE = { color: '#38bdf8', offset: -18, label: 'Audio waveform' };
-
 let ws = null;
 let audioContext = null;
 let mediaStream = null;
@@ -37,72 +37,23 @@ let sourceNode = null;
 let processorNode = null;
 let listening = false;
 
-/* --------------------- THREE.JS SETUP --------------------- */
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(window.devicePixelRatio || 1);
-container.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070d);
-
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
-camera.position.set(45, 35, 70);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.enablePan = false;
-controls.minDistance = 25;
-controls.maxDistance = 160;
-controls.maxPolarAngle = Math.PI * 0.85;
-controls.target.set(0, 0, 0);
-
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
-keyLight.position.set(60, 80, 40);
-const fillLight = new THREE.DirectionalLight(0x88aaff, 0.4);
-fillLight.position.set(-40, 30, -60);
-scene.add(ambientLight, keyLight, fillLight);
-
-const gridGroup = new THREE.Group();
-scene.add(gridGroup);
-
-const layerMeshes = new Map();
-const audioLineGroup = new THREE.Group();
-scene.add(audioLineGroup);
-
-function ensureSurface(name, color) {
-  if (layerMeshes.has(name)) {
-    return layerMeshes.get(name);
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
   }
-  const geometry = new THREE.BufferGeometry();
-  const material = new THREE.MeshPhongMaterial({
-    color: new THREE.Color(color),
-    transparent: true,
-    opacity: 0.65,
-    side: THREE.DoubleSide,
-    shininess: 60,
-    specular: new THREE.Color(0x222222),
-    vertexColors: true,
-  });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
-  scene.add(mesh);
-  layerMeshes.set(name, mesh);
-  return mesh;
 }
 
-function updateRendererSize() {
-  const { width, height } = container.getBoundingClientRect();
-  renderer.setSize(width, height, false);
-  camera.aspect = width / height;
-  camera.updateProjectionMatrix();
-}
+window.addEventListener('resize', () => {
+  resizeCanvas();
+  renderScene();
+});
+resizeCanvas();
 
-window.addEventListener('resize', updateRendererSize);
-updateRendererSize();
-
-/* --------------------- SOCKET / AUDIO --------------------- */
 async function ensureSocket() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
@@ -115,15 +66,8 @@ async function ensureSocket() {
   ws.onopen = () => {
     console.log('WebSocket connected');
   };
-
-  ws.onmessage = (event) => {
-    handleMessage(event.data);
-  };
-
-  ws.onerror = (err) => {
-    console.error('WebSocket error', err);
-  };
-
+  ws.onmessage = (event) => handleMessage(event.data);
+  ws.onerror = (err) => console.error('WebSocket error', err);
   ws.onclose = () => {
     listening = false;
     updateButtons();
@@ -145,20 +89,16 @@ async function startListening() {
         video: false,
       });
     }
-
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (audioContext.state === 'suspended') {
       await audioContext.resume();
     }
-
     sourceNode = audioContext.createMediaStreamSource(mediaStream);
     processorNode = audioContext.createScriptProcessor(2048, 1, 1);
-
     const gainNode = audioContext.createGain();
     gainNode.gain.value = 0;
-
     processorNode.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
       const down = downsample(input, audioContext.sampleRate, TARGET_SAMPLE_RATE);
@@ -166,11 +106,9 @@ async function startListening() {
         ws.send(down.buffer);
       }
     };
-
     sourceNode.connect(processorNode);
     processorNode.connect(gainNode);
     gainNode.connect(audioContext.destination);
-
     listening = true;
     updateButtons();
   } catch (err) {
@@ -228,7 +166,6 @@ function downsample(buffer, inRate, outRate) {
   return result;
 }
 
-/* --------------------- SOCKET HANDLING --------------------- */
 function handleMessage(message) {
   let data;
   try {
@@ -252,230 +189,14 @@ function handleMessage(message) {
     state.mode = data.meta?.mode || state.mode;
     state.transcript = data.meta?.transcript || '';
     state.speakerColors = data.meta?.speaker_colors || {};
-    updateVisualization();
+    updateTranscript();
+    updateDiagnostics();
+    updateModeUI();
+    renderScene();
     return;
   }
 }
 
-function updateVisualization() {
-  updateTranscript();
-  updateDiagnostics();
-  updateModeUI();
-  refreshSurfaces();
-}
-
-/* --------------------- VISUAL UPDATE --------------------- */
-function refreshSurfaces() {
-  const activeLayers = Object.keys(LAYER_CONFIGS)
-    .map((name) => state.layers.find((layer) => layer.name === name))
-    .filter(Boolean);
-  const hasAudio = Array.isArray(state.audio?.times) && state.audio.times.length > 0;
-
-  updateGridHelpers(activeLayers, hasAudio);
-
-  if (!activeLayers.length && !hasAudio) {
-    disposeSurfaces();
-    return;
-  }
-
-  const domain = computeDomain(activeLayers, state.audio);
-
-  activeLayers.forEach((layer, idx) => {
-    const config = LAYER_CONFIGS[layer.name];
-    const mesh = ensureSurface(layer.name, config.color);
-    const geometry = buildSurfaceGeometry(layer, domain, config, idx);
-    mesh.geometry.dispose();
-    mesh.geometry = geometry;
-  });
-
-  // remove any meshes for missing layers
-  [...layerMeshes.keys()].forEach((name) => {
-    if (!activeLayers.find((layer) => layer.name === name)) {
-      const mesh = layerMeshes.get(name);
-      scene.remove(mesh);
-      mesh.geometry.dispose();
-      layerMeshes.delete(name);
-    }
-  });
-
-  updateAudioGeometry(domain, hasAudio);
-}
-
-function disposeSurfaces() {
-  [...layerMeshes.values()].forEach((mesh) => {
-    scene.remove(mesh);
-    mesh.geometry.dispose();
-  });
-  layerMeshes.clear();
-  audioLineGroup.clear();
-}
-
-function computeDomain(layers, audio) {
-  let minTime = Number.POSITIVE_INFINITY;
-  let maxTime = 0;
-  const stats = {};
-
-  layers.forEach((layer) => {
-   if (!layer.times.length || !layer.vectors.length) {
-     return;
-   }
-   minTime = Math.min(minTime, layer.times[0]);
-   maxTime = Math.max(maxTime, layer.times[layer.times.length - 1]);
-    const sampleVector = layer.vectors[0] || [];
-    if (!sampleVector.length) {
-      return;
-    }
-    const flat = layer.vectors.flat();
-    let minVal = Math.min(...flat);
-    let maxVal = Math.max(...flat);
-    if (Math.abs(maxVal - minVal) < 1e-6) {
-      maxVal = minVal + 1e-3;
-    }
-    stats[layer.name] = { min: minVal, max: maxVal, neurons: sampleVector.length };
-  });
-
-  if (audio?.times?.length) {
-    minTime = Math.min(minTime, audio.times[0]);
-    maxTime = Math.max(maxTime, audio.times[audio.times.length - 1]);
-  }
-  if (!Number.isFinite(minTime)) {
-    minTime = 0;
-  }
-  if (maxTime <= minTime) {
-    maxTime = minTime + 1;
-  }
-  return { minTime, maxTime, stats };
-}
-
-function buildSurfaceGeometry(layer, domain, config, stackIndex) {
-  const times = layer.times;
-  const vectors = layer.vectors;
-  const speakers = layer.speakers;
-  const stats = domain.stats[layer.name];
-  const rows = Math.min(times.length, vectors.length);
-  const cols = stats ? stats.neurons : (vectors[0] ? vectors[0].length : 0);
-  if (!rows || !cols || rows < 2 || cols < 2) {
-    return new THREE.BufferGeometry();
-  }
-  const colorsBySpeaker = state.speakerColors || {};
-
-  const width = 60;
-  const depthScale = 30;
-  const heightScale = 18;
-  const yOffset = config.offset || 0;
-
-  const positions = new Float32Array(rows * cols * 3);
-  const colors = new Float32Array(rows * cols * 3);
-  const indices = new Uint32Array((rows - 1) * (cols - 1) * 6);
-
-  const speakerColorCache = new Map();
-  function colorForSpeaker(id) {
-    if (id === null || id === undefined || id < 0) {
-      return new THREE.Color(config.color);
-    }
-    const key = String(id);
-    if (!speakerColorCache.has(key)) {
-      const hex = colorsBySpeaker[key] || config.color;
-      speakerColorCache.set(key, new THREE.Color(hex));
-    }
-    return speakerColorCache.get(key);
-  }
-
-  for (let r = 0; r < rows; r += 1) {
-    const t = times[r];
-    const timeNorm = (t - domain.minTime) / (domain.maxTime - domain.minTime);
-    const vector = vectors[r];
-    const speaker = speakers[r] ?? null;
-    for (let c = 0; c < cols; c += 1) {
-      const idx = r * cols + c;
-      const posIndex = idx * 3;
-      const colNorm = cols > 1 ? c / (cols - 1) : 0;
-      const activity = vector[c];
-      const normActivity = (activity - stats.min) / (stats.max - stats.min);
-      const height = (normActivity - 0.5) * heightScale;
-
-      positions[posIndex] = (timeNorm - 0.5) * width;
-      positions[posIndex + 1] = yOffset + (colNorm - 0.5) * depthScale;
-      positions[posIndex + 2] = height;
-
-      const color = colorForSpeaker(speaker);
-      colors[posIndex] = color.r;
-      colors[posIndex + 1] = color.g;
-      colors[posIndex + 2] = color.b;
-    }
-  }
-
-  let idxPtr = 0;
-  for (let r = 0; r < rows - 1; r += 1) {
-    for (let c = 0; c < cols - 1; c += 1) {
-      const a = r * cols + c;
-      const b = r * cols + (c + 1);
-      const d = (r + 1) * cols + c;
-      const e = (r + 1) * cols + (c + 1);
-      indices[idxPtr++] = a;
-      indices[idxPtr++] = d;
-      indices[idxPtr++] = b;
-      indices[idxPtr++] = b;
-      indices[idxPtr++] = d;
-      indices[idxPtr++] = e;
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function updateAudioGeometry(domain, hasAudio) {
-  audioLineGroup.clear();
-  if (!hasAudio) {
-    return;
-  }
-  const times = state.audio.times;
-  const values = state.audio.rms;
-  if (!times.length || !values.length) {
-    return;
-  }
-  const width = 60;
-  const baselineY = AUDIO_STYLE.offset;
-  const amplitude = 10;
-  const positions = new Float32Array(times.length * 3);
-  for (let i = 0; i < times.length; i += 1) {
-    const timeNorm = (times[i] - domain.minTime) / (domain.maxTime - domain.minTime);
-    const x = (timeNorm - 0.5) * width;
-    const y = baselineY;
-    const z = (values[i] - 0.5) * amplitude;
-    const idx = i * 3;
-    positions[idx] = x;
-    positions[idx + 1] = y;
-    positions[idx + 2] = z;
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const material = new THREE.LineBasicMaterial({ color: new THREE.Color(AUDIO_STYLE.color), transparent: true, opacity: 0.7 });
-  const line = new THREE.Line(geometry, material);
-  audioLineGroup.add(line);
-}
-
-function updateGridHelpers(layers, hasAudio) {
-  gridGroup.clear();
-  if (!state.showGrid || (!layers.length && !hasAudio)) {
-    gridGroup.visible = false;
-    return;
-  }
-  gridGroup.visible = true;
-  const width = 60;
-  const depth = 60;
-  const grid = new THREE.GridHelper(width, 10, 0x284a63, 0x284a63);
-  grid.rotation.x = Math.PI / 2;
-  grid.position.y = -22;
-  gridGroup.add(grid);
-}
-
-/* --------------------- UI HELPERS --------------------- */
 function updateTranscript() {
   const trimmed = state.transcript && state.transcript.trim();
   transcriptText.textContent = trimmed && trimmed.length
@@ -511,51 +232,268 @@ function updateButtons() {
   startBtn.classList.toggle('ghost', listening);
 }
 
-/* --------------------- UI EVENTS --------------------- */
 startBtn.addEventListener('click', () => {
   if (!listening) {
     startListening();
   } else {
-    stopListening();
-  }
-});
+function renderScene() {
+  resizeCanvas();
+  const rect = canvas.getBoundingClientRect();
+  const width = rect.width;
+  const height = rect.height;
+  ctx.clearRect(0, 0, width, height);
 
-modeBtn.addEventListener('click', () => {
+  const activeLayers = LAYER_ORDER
+    .map((name) => state.layers.find((layer) => layer.name === name))
+    .filter((layer) => layer && layer.times?.length && layer.vectors?.length);
+  const hasAudio = state.audio?.times?.length;
+
+  if (!activeLayers.length && !hasAudio) {
+    drawPlaceholder(width, height);
+    return;
+  }
+
+  const domain = computeDomain(activeLayers, state.audio);
+  if (state.showGrid) {
+    drawGrid(width, height, domain);
+  }
+
+  activeLayers.forEach((layer) => {
+    drawLayerSurface(width, height, layer, domain, LAYER_CONFIG[layer.name]);
+  });
+
+  if (hasAudio) {
+    drawAudioSurface(width, height, domain);
+  }
+}
+
+function drawPlaceholder(width, height) {
+  ctx.fillStyle = 'rgba(148, 197, 255, 0.35)';
+  ctx.font = '15px "Inter", system-ui';
+  ctx.textAlign = 'center';
+  ctx.fillText('Speak to see neural trajectories…', width / 2, height / 2);
+  ctx.textAlign = 'left';
+}
+
+function computeDomain(layers, audio) {
+  let minTime = Number.POSITIVE_INFINITY;
+  let maxTime = 0;
+  const stats = {};
+  let maxNeurons = 0;
+
+  layers.forEach((layer) => {
+    if (!layer.times.length || !layer.vectors.length) {
+      return;
+    }
+    minTime = Math.min(minTime, layer.times[0]);
+    maxTime = Math.max(maxTime, layer.times[layer.times.length - 1]);
+    const sampleVector = layer.vectors[0] || [];
+    if (!sampleVector.length) {
+      return;
+    }
+    maxNeurons = Math.max(maxNeurons, sampleVector.length);
+    const flat = layer.vectors.flat();
+    let minVal = Math.min(...flat);
+    let maxVal = Math.max(...flat);
+    if (Math.abs(maxVal - minVal) < 1e-6) {
+      maxVal = minVal + 1e-3;
+    }
+    stats[layer.name] = {
+      min: minVal,
+      max: maxVal,
+      neuronCount: sampleVector.length,
+    };
+  });
+
+  if (audio?.times?.length) {
+    minTime = Math.min(minTime, audio.times[0]);
+    maxTime = Math.max(maxTime, audio.times[audio.times.length - 1]);
+  }
+  if (!Number.isFinite(minTime)) {
+    minTime = 0;
+  }
+  if (maxTime <= minTime) {
+    maxTime = minTime + 1;
+  }
+  return { minTime, maxTime, stats, maxNeurons: Math.max(maxNeurons, 1) };
+}
+
+function drawGrid(width, height, domain) {
+  const margin = 70;
+  const usableWidth = width - margin * 2;
+  ctx.strokeStyle = 'rgba(148, 197, 255, 0.16)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5, 7]);
+  const cols = 6;
+  for (let i = 0; i <= cols; i += 1) {
+    const ratio = i / cols;
+    const x = margin + ratio * usableWidth;
+    ctx.beginPath();
+    ctx.moveTo(x, margin * 0.6);
+    ctx.lineTo(x, height - margin * 0.5);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
+function drawLayerSurface(width, height, layer, domain, config = {}) {
+  const margin = 70;
+  const usableWidth = width - margin * 2;
+  const depth = 90;
+  const amplitude = 80;
+  const angle = Math.PI / 6;
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+  const stats = domain.stats[layer.name];
+  if (!stats) {
+    return;
+  }
+  const baseline = height - margin - config.offset;
+  const neuronCount = stats.neuronCount;
+  const sampleStep = Math.max(1, Math.floor(neuronCount / MAX_NEURON_SAMPLES));
+
+  ctx.globalAlpha = 0.3;
+  layer.vectors.forEach((vector, timeIndex) => {
+    const timeNorm = (layer.times[timeIndex] - domain.minTime) / (domain.maxTime - domain.minTime);
+    ctx.beginPath();
+    for (let neuron = 0; neuron < neuronCount; neuron += sampleStep) {
+      const colNorm = neuronCount > 1 ? neuron / (neuronCount - 1) : 0;
+      const activity = vector[neuron];
+      const normActivity = (activity - stats.min) / (stats.max - stats.min);
+      const x = margin + timeNorm * usableWidth + colNorm * depth * cosA;
+      const y = baseline + colNorm * depth * sinA - (normActivity - 0.5) * amplitude;
+      if (neuron === 0) {
+        ctx.moveTo(x, baseline + colNorm * depth * sinA);
+        ctx.lineTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.lineTo(margin + timeNorm * usableWidth + depth * cosA, baseline + depth * sinA);
+    ctx.closePath();
+    const gradient = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline + depth * sinA);
+    gradient.addColorStop(0, hexToRgba(config.color || '#cbd5f5', 0.55));
+    gradient.addColorStop(1, hexToRgba(config.color || '#cbd5f5', 0.05));
+    ctx.fillStyle = gradient;
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  ctx.lineWidth = 2;
+  const colorsBySpeaker = state.speakerColors || {};
+  for (let neuron = 0; neuron < neuronCount; neuron += sampleStep) {
+    const colNorm = neuronCount > 1 ? neuron / (neuronCount - 1) : 0;
+    ctx.beginPath();
+    layer.vectors.forEach((vector, timeIndex) => {
+      const timeNorm = (layer.times[timeIndex] - domain.minTime) / (domain.maxTime - domain.minTime);
+      const activity = vector[neuron];
+      const normActivity = (activity - stats.min) / (stats.max - stats.min);
+      const speaker = layer.speakers[timeIndex];
+      const color = colorsBySpeaker[String(speaker)] || config.color || '#cbd5f5';
+      const x = margin + timeNorm * usableWidth + colNorm * depth * cosA;
+      const y = baseline + colNorm * depth * sinA - (normActivity - 0.5) * amplitude;
+      ctx.strokeStyle = hexToRgba(color, state.showGrid ? 0.95 : 0.8);
+      if (timeIndex === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = hexToRgba('#e2e8f0', 0.65);
+  ctx.font = '12px "Inter", system-ui';
+  ctx.textAlign = 'right';
+  ctx.fillText(config.label || layer.name, margin - 18, baseline - 8);
+  ctx.textAlign = 'left';
+}
+
+function drawAudioSurface(width, height, domain) {
+  const margin = 70;
+  const usableWidth = width - margin * 2;
+  const baseline = height - margin + AUDIO_STYLE.offset;
+  const amplitude = 35;
+
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.8);
+  ctx.beginPath();
+  state.audio.times.forEach((time, idx) => {
+    const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
+    const y = baseline - (state.audio.rms[idx] - 0.5) * amplitude * 2;
+    if (idx === 0) {
+      ctx.moveTo(x, baseline);
+      ctx.lineTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.lineTo(margin + usableWidth, baseline);
+  ctx.stroke();
+  ctx.fillStyle = hexToRgba(AUDIO_STYLE.color, 0.15);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(148, 197, 255, 0.65)';
+  ctx.font = '12px "Inter", system-ui';
+  ctx.textAlign = 'right';
+  ctx.fillText(AUDIO_STYLE.label, margin - 18, baseline - 6);
+  ctx.textAlign = 'left';
+}
+
+function hexToRgba(hex, alpha) {
+  const clean = hex.replace('#', '');
+  const bigint = parseInt(clean, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function btnGuarded(handler) {
+  return () => {
+    const result = handler();
+    if (result && typeof result.catch === 'function') {
+      result.catch((err) => console.error(err));
+    }
+  };
+}
+
+modeBtn.addEventListener('click', btnGuarded(async () => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return;
   }
   const nextMode = state.mode === 'analysis' ? 'performance' : 'analysis';
   ws.send(JSON.stringify({ type: 'mode', mode: nextMode }));
-});
+}));
+
+startBtn.addEventListener('click', btnGuarded(async () => {
+  if (!listening) {
+    await startListening();
+  } else {
+    stopListening();
+  }
+}));
 
 gridBtn.addEventListener('click', () => {
   state.showGrid = !state.showGrid;
   updateModeUI();
-  refreshSurfaces();
+  renderScene();
 });
 
-resetBtn.addEventListener('click', () => {
+resetBtn.addEventListener('click', btnGuarded(async () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'reset' }));
   }
   state.layers = [];
   state.audio = { times: [], rms: [] };
-  refreshSurfaces();
+  renderScene();
   updateTranscript();
-});
+}));
 
 updateButtons();
 updateModeUI();
 updateDiagnostics();
 updateTranscript();
+renderScene();
 
-/* --------------------- RENDER LOOP --------------------- */
-function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-}
-animate();
-
-/* --------------------- EXPORTS --------------------- */
-// Ready for interactions
+ensureSocket().catch(() => undefined);
