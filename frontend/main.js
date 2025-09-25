@@ -9,16 +9,15 @@ const modePill = document.getElementById('mode-pill');
 const transcriptText = document.getElementById('transcript-text');
 
 const TARGET_SAMPLE_RATE = 16_000;
-const MAX_NEURON_SAMPLES = 24; // Reduced for cleaner heatmap visualization
 const HISTORY_SECONDS = 15;
 
 const LAYER_ORDER = ['L10', 'L6', 'L2'];
 const LAYER_CONFIG = {
-  L10: { color: '#a855f7', offset: 120, label: 'Layer 10 · semantics' },
-  L6: { color: '#f97316', offset: 80, label: 'Layer 6 · prosody' },
-  L2: { color: '#22d3ee', offset: 40, label: 'Layer 2 · voiceprint' },
+  L10: { color: '#a855f7', offset: 250, label: 'Layer 10 · semantics' },
+  L6: { color: '#f97316', offset: 160, label: 'Layer 6 · prosody' },
+  L2: { color: '#22d3ee', offset: 70, label: 'Layer 2 · voiceprint' },
 };
-const AUDIO_STYLE = { color: '#38bdf8', offset: 0, label: 'Audio waveform' };
+const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'Audio waveform' };
 
 const state = {
   layers: [],
@@ -239,10 +238,10 @@ function renderScene() {
   const height = rect.height;
   ctx.clearRect(0, 0, width, height);
   
-  // Add subtle background gradient for depth
+  // Add very subtle background gradient for depth
   const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
-  bgGradient.addColorStop(0, 'rgba(10, 15, 30, 0.05)');
-  bgGradient.addColorStop(1, 'rgba(10, 15, 30, 0.15)');
+  bgGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  bgGradient.addColorStop(1, 'rgba(10, 15, 30, 0.08)');
   ctx.fillStyle = bgGradient;
   ctx.fillRect(0, 0, width, height);
 
@@ -271,10 +270,10 @@ function renderScene() {
 }
 
 function drawPlaceholder(width, height) {
-  ctx.fillStyle = 'rgba(148, 197, 255, 0.35)';
-  ctx.font = '15px "Inter", system-ui';
+  ctx.fillStyle = 'rgba(148, 197, 255, 0.25)';
+  ctx.font = '14px "Inter", system-ui';
   ctx.textAlign = 'center';
-  ctx.fillText('Speak to see neural trajectories…', width / 2, height / 2);
+  ctx.fillText('Speak to see neural activation ridges...', width / 2, height / 2);
   ctx.textAlign = 'left';
 }
 
@@ -325,126 +324,117 @@ function drawGrid(width, height, domain) {
   const margin = 70;
   const usableWidth = width - margin * 2;
   
-  // Draw subtle vertical grid lines
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.08)';
+  // Draw minimal vertical time markers
+  ctx.strokeStyle = 'rgba(148, 197, 255, 0.05)';
   ctx.lineWidth = 0.5;
-  ctx.setLineDash([2, 8]);
-  const cols = 10;
-  for (let i = 0; i <= cols; i += 1) {
+  const cols = 5; // Just 5 time markers
+  for (let i = 1; i < cols; i += 1) {
     const ratio = i / cols;
     const x = margin + ratio * usableWidth;
     ctx.beginPath();
-    ctx.moveTo(x, margin * 0.6);
+    ctx.moveTo(x, margin);
     ctx.lineTo(x, height - margin * 0.5);
     ctx.stroke();
   }
   
-  // Draw subtle horizontal lines for layer boundaries
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.06)';
-  LAYER_ORDER.forEach(layerName => {
-    const config = LAYER_CONFIG[layerName];
-    const y = height - margin - config.offset;
-    ctx.beginPath();
-    ctx.moveTo(margin, y);
-    ctx.lineTo(margin + usableWidth, y);
-    ctx.stroke();
-  });
-  
-  ctx.setLineDash([]);
+  // Draw axis lines
+  ctx.strokeStyle = 'rgba(148, 197, 255, 0.1)';
+  ctx.beginPath();
+  // Vertical axis
+  ctx.moveTo(margin, margin);
+  ctx.lineTo(margin, height - margin * 0.5);
+  // Horizontal baseline
+  ctx.moveTo(margin, height - margin * 0.5);
+  ctx.lineTo(margin + usableWidth, height - margin * 0.5);
+  ctx.stroke();
 }
 
 function drawLayerSurface(width, height, layer, domain, config = {}) {
   const margin = 70;
   const usableWidth = width - margin * 2;
-  const depth = 60; // Reduced depth for cleaner look
-  const amplitude = 40; // Reduced amplitude
-  const angle = Math.PI / 8; // Shallower angle
-  const cosA = Math.cos(angle);
-  const sinA = Math.sin(angle);
   const stats = domain.stats[layer.name];
   if (!stats) {
     return;
   }
-  const baseline = height - margin - config.offset;
-  const neuronCount = stats.neuronCount;
-  const sampleStep = Math.max(1, Math.floor(neuronCount / MAX_NEURON_SAMPLES));
-
-  // Create heatmap-style grid instead of filled polygons
-  const timeSteps = layer.times.length;
-  const cellWidth = usableWidth / timeSteps;
-  const cellHeight = depth / (neuronCount / sampleStep);
-
-  // Draw heatmap cells
-  layer.vectors.forEach((vector, timeIndex) => {
-    const timeNorm = (layer.times[timeIndex] - domain.minTime) / (domain.maxTime - domain.minTime);
-    const baseX = margin + timeNorm * usableWidth;
-    
-    for (let neuron = 0; neuron < neuronCount; neuron += sampleStep) {
-      const colNorm = neuronCount > 1 ? neuron / (neuronCount - 1) : 0;
-      const activity = vector[neuron];
-      const normActivity = (activity - stats.min) / (stats.max - stats.min);
-      
-      // Position with 3D projection
-      const x = baseX + colNorm * depth * cosA;
-      const y = baseline + colNorm * depth * sinA - normActivity * amplitude;
-      
-      // Draw heatmap cell with intensity-based opacity
-      const intensity = normActivity;
-      ctx.fillStyle = hexToRgba(config.color || '#cbd5f5', intensity * 0.7 + 0.1);
-      
-      // Draw small rectangle for each data point
-      ctx.fillRect(x - cellWidth/2, y - 2, cellWidth, 4);
-    }
-  });
-
-  // Draw ridge lines - fewer lines for cleaner look
-  const ridgeStep = Math.max(4, Math.floor(neuronCount / 8)); // Only draw ~8 ridge lines
-  ctx.lineWidth = 1.5;
   
-  for (let neuron = 0; neuron < neuronCount; neuron += ridgeStep) {
-    const colNorm = neuronCount > 1 ? neuron / (neuronCount - 1) : 0;
+  const baseline = height - margin - config.offset;
+  const amplitude = 80; // Height of ridges - increased for better visibility
+  const neuronCount = stats.neuronCount;
+  
+  // Create ridge plot with filled areas
+  const ridgeCount = 4; // Draw 4 main ridges per layer for elegant visualization
+  const ridgeStep = Math.max(1, Math.floor(neuronCount / ridgeCount));
+  
+  // Process each ridge from back to front for proper layering
+  for (let ridgeIdx = ridgeCount - 1; ridgeIdx >= 0; ridgeIdx--) {
+    const neuron = ridgeIdx * ridgeStep;
+    if (neuron >= neuronCount) continue;
     
-    // Create smooth ridge line using moving average
-    ctx.beginPath();
-    ctx.strokeStyle = hexToRgba(config.color || '#cbd5f5', 0.4);
+    const depthOffset = (ridgeIdx / (ridgeCount - 1)) * 45; // 3D depth effect
+    const opacity = 0.25 + (ridgeIdx / (ridgeCount - 1)) * 0.5; // Opacity range for depth
     
-    let prevX = 0, prevY = 0;
-    layer.vectors.forEach((vector, timeIndex) => {
-      const timeNorm = (layer.times[timeIndex] - domain.minTime) / (domain.maxTime - domain.minTime);
-      
-      // Calculate smoothed activity (average with neighbors)
-      let smoothedActivity = vector[neuron];
-      if (timeIndex > 0 && timeIndex < layer.vectors.length - 1) {
-        const prev = layer.vectors[timeIndex - 1][neuron];
-        const next = layer.vectors[timeIndex + 1][neuron];
-        smoothedActivity = (prev + vector[neuron] * 2 + next) / 4;
+    // Smooth the data with moving average
+    const smoothedData = [];
+    layer.vectors.forEach((vector, idx) => {
+      let value = vector[neuron];
+      if (idx > 0 && idx < layer.vectors.length - 1) {
+        const prev = layer.vectors[idx - 1][neuron];
+        const next = layer.vectors[idx + 1][neuron];
+        value = (prev + value * 2 + next) / 4;
       }
+      smoothedData.push(value);
+    });
+    
+    // Draw filled ridge area
+    ctx.beginPath();
+    const ridgeBaseline = baseline + depthOffset;
+    
+    // Start from baseline
+    ctx.moveTo(margin, ridgeBaseline);
+    
+    // Draw the ridge line
+    layer.times.forEach((time, idx) => {
+      const timeNorm = (time - domain.minTime) / (domain.maxTime - domain.minTime);
+      const x = margin + timeNorm * usableWidth;
+      const normActivity = (smoothedData[idx] - stats.min) / (stats.max - stats.min);
+      const y = ridgeBaseline - normActivity * amplitude;
       
-      const normActivity = (smoothedActivity - stats.min) / (stats.max - stats.min);
-      const x = margin + timeNorm * usableWidth + colNorm * depth * cosA;
-      const y = baseline + colNorm * depth * sinA - normActivity * amplitude;
-      
-      if (timeIndex === 0) {
-        ctx.moveTo(x, y);
-        prevX = x;
-        prevY = y;
+      if (idx === 0) {
+        ctx.lineTo(x, y);
       } else {
-        // Smooth curve using quadratic bezier
+        // Smooth curve
+        const prevX = margin + ((layer.times[idx-1] - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
         const cpX = (prevX + x) / 2;
+        const prevY = ridgeBaseline - ((smoothedData[idx-1] - stats.min) / (stats.max - stats.min)) * amplitude;
         const cpY = (prevY + y) / 2;
-        ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
-        prevX = x;
-        prevY = y;
+        ctx.quadraticCurveTo(cpX, cpY, x, y);
       }
     });
-    ctx.lineTo(prevX, prevY);
+    
+    // Complete the shape
+    ctx.lineTo(margin + usableWidth, ridgeBaseline);
+    ctx.closePath();
+    
+    // Fill with gradient - lighter at peaks, darker at base
+    const gradient = ctx.createLinearGradient(0, ridgeBaseline - amplitude, 0, ridgeBaseline + 10);
+    gradient.addColorStop(0, hexToRgba(config.color, Math.min(1, opacity * 1.3))); // Brighter peaks
+    gradient.addColorStop(0.4, hexToRgba(config.color, opacity * 0.8));
+    gradient.addColorStop(0.8, hexToRgba(config.color, opacity * 0.3));
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // Fade to transparent at base
+    ctx.fillStyle = gradient;
+    ctx.fill();
+    
+    // Add subtle ridge outline for definition
+    ctx.strokeStyle = hexToRgba(config.color, opacity * 0.6);
+    ctx.lineWidth = 0.5;
     ctx.stroke();
   }
 
-  ctx.fillStyle = hexToRgba('#e2e8f0', 0.65);
-  ctx.font = '12px "Inter", system-ui';
+  // Draw label
+  ctx.fillStyle = 'rgba(200, 210, 230, 0.7)';
+  ctx.font = '11px "Inter", system-ui';
   ctx.textAlign = 'right';
-  ctx.fillText(config.label || layer.name, margin - 18, baseline - 8);
+  ctx.fillText(config.label || layer.name, margin - 15, baseline + 5);
   ctx.textAlign = 'left';
 }
 
@@ -452,36 +442,48 @@ function drawAudioSurface(width, height, domain) {
   const margin = 70;
   const usableWidth = width - margin * 2;
   const baseline = height - margin + AUDIO_STYLE.offset;
-  const amplitude = 20; // Reduced amplitude for subtler effect
+  const amplitude = 20; // Subtle audio waveform
 
-  // Draw audio as subtle heatmap bars
-  const barWidth = Math.max(1, usableWidth / state.audio.times.length);
+  // Draw audio as a simple filled waveform
+  ctx.beginPath();
+  ctx.moveTo(margin, baseline);
   
   state.audio.times.forEach((time, idx) => {
     const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-    const rms = state.audio.rms[idx];
-    const barHeight = rms * amplitude;
+    const y = baseline - state.audio.rms[idx] * amplitude;
     
-    // Draw gradient bar for each audio sample
-    const gradient = ctx.createLinearGradient(0, baseline - barHeight, 0, baseline);
-    gradient.addColorStop(0, hexToRgba(AUDIO_STYLE.color, rms * 0.6));
-    gradient.addColorStop(1, hexToRgba(AUDIO_STYLE.color, 0.1));
-    ctx.fillStyle = gradient;
-    ctx.fillRect(x - barWidth/2, baseline - barHeight, barWidth, barHeight);
+    if (idx === 0) {
+      ctx.lineTo(x, y);
+    } else {
+      // Smooth the line
+      const prevX = margin + ((state.audio.times[idx-1] - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
+      const cpX = (prevX + x) / 2;
+      const prevY = baseline - state.audio.rms[idx-1] * amplitude;
+      const cpY = (prevY + y) / 2;
+      ctx.quadraticCurveTo(cpX, cpY, x, y);
+    }
   });
   
-  // Draw subtle baseline
-  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.3);
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(margin, baseline);
   ctx.lineTo(margin + usableWidth, baseline);
+  ctx.closePath();
+  
+  // Fill with subtle gradient
+  const gradient = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline);
+  gradient.addColorStop(0, hexToRgba(AUDIO_STYLE.color, 0.4));
+  gradient.addColorStop(1, hexToRgba(AUDIO_STYLE.color, 0.02));
+  ctx.fillStyle = gradient;
+  ctx.fill();
+  
+  // Add subtle outline
+  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.3);
+  ctx.lineWidth = 0.5;
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(148, 197, 255, 0.65)';
-  ctx.font = '12px "Inter", system-ui';
+  // Draw label
+  ctx.fillStyle = 'rgba(200, 210, 230, 0.7)';
+  ctx.font = '11px "Inter", system-ui';
   ctx.textAlign = 'right';
-  ctx.fillText(AUDIO_STYLE.label, margin - 18, baseline - 6);
+  ctx.fillText(AUDIO_STYLE.label, margin - 15, baseline + 5);
   ctx.textAlign = 'left';
 }
 
