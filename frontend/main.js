@@ -13,9 +13,9 @@ const HISTORY_SECONDS = 15;
 
 const LAYER_ORDER = ['L10', 'L6', 'L2'];
 const LAYER_CONFIG = {
-  L10: { label: 'L10 · semantics (PC1–3)', gradientShift: 0.0 },
-  L6: { label: 'L6 · prosody (PC1–3)', gradientShift: 0.2 },
-  L2: { label: 'L2 · voiceprint (PC1–3)', gradientShift: 0.45 },
+  L10: { label: 'L10 · semantics (PC1–2)' },
+  L6: { label: 'L6 · prosody (PC1–2)' },
+  L2: { label: 'L2 · voiceprint (PC1–2)' },
 };
 const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'waveform' };
 
@@ -32,7 +32,7 @@ const RIDGE_TOP_MARGIN = 110;
 const RIDGE_BOTTOM_MARGIN = 150;
 const RIDGE_MIN_BAND_HEIGHT = 80;
 const RIDGE_DEPTH_RATIO = 0.25;
-const COMPONENTS_PER_LAYER = 3;
+const COMPONENTS_PER_LAYER = 2;
 
 const state = {
   layers: [],
@@ -737,9 +737,8 @@ function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, to
     const activityRange = Math.max(1e-6, compStats.max - compStats.min);
     const smoothedValues = smoothSeries(values.slice(0, sampleCount));
     const componentOffset = (componentIndex - (componentCount - 1) / 2) * componentSpread;
-    const gradientShift = (config.gradientShift || 0) + (componentIndex - (componentCount - 1) / 2) * 0.08;
-    const fillAlpha = 0.28 + ((componentCount - componentIndex) / componentCount) * 0.16;
-    const strokeAlpha = 0.65 + (componentIndex / Math.max(1, componentCount - 1)) * 0.25;
+    const fillAlpha = 0.32 + ((componentCount - componentIndex) / componentCount) * 0.18;
+    const strokeAlpha = 0.7 + (componentIndex / Math.max(1, componentCount - 1)) * 0.22;
 
     const points = [];
     for (let i = 0; i < sampleCount; i += 1) {
@@ -760,7 +759,7 @@ function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, to
       const activityNorm = Math.min(1, Math.max(0, (value - compStats.min) / activityRange));
       const baselineForComponent = layerBaseline + componentOffset;
       const y = baselineForComponent - activityNorm * amplitude + depthOffset;
-      points.push({ x, y });
+      points.push({ x, y, intensity: activityNorm });
     }
 
     if (points.length < 2) {
@@ -768,20 +767,8 @@ function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, to
     }
 
     const baselineY = layerBaseline + componentOffset + depthScale;
-    const fillGradient = createRainbowGradient(
-      margin,
-      layerBaseline,
-      margin + usableWidth,
-      fillAlpha,
-      gradientShift,
-    );
-    const strokeGradient = createRainbowGradient(
-      margin,
-      layerBaseline - amplitude,
-      margin + usableWidth,
-      strokeAlpha,
-      gradientShift,
-    );
+    const fillGradient = createIntensityGradient(points, margin, usableWidth, fillAlpha);
+    const strokeGradient = createIntensityGradient(points, margin, usableWidth, strokeAlpha);
 
     const traceRidgeShape = () => {
       ctx.beginPath();
@@ -875,23 +862,61 @@ function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, to
   ctx.restore();
 }
 
-function createRainbowGradient(x0, y0, x1, alpha = 1, shift = 0) {
-  const gradient = ctx.createLinearGradient(x0, y0, x1, y0);
-  const clampedAlpha = Math.min(1, Math.max(0, alpha));
-  const normalizedShift = ((shift % 1) + 1) % 1;
-  const shiftedStops = RAINBOW_GRADIENT.map(({ stop, color }) => {
-    let shifted = stop - normalizedShift;
-    if (shifted < 0) {
-      shifted += 1;
-    }
-    return { stop: shifted, color };
-  }).sort((a, b) => a.stop - b.stop);
+function createIntensityGradient(points, margin, usableWidth, alpha = 1) {
+  const gradient = ctx.createLinearGradient(margin, 0, margin + usableWidth, 0);
+  const clampAlpha = Math.min(1, Math.max(0, alpha));
+  if (!Array.isArray(points) || !points.length || !Number.isFinite(usableWidth) || usableWidth <= 0) {
+    gradient.addColorStop(0, intensityToColor(0.5, clampAlpha));
+    gradient.addColorStop(1, intensityToColor(0.5, clampAlpha));
+    return gradient;
+  }
 
-  shiftedStops.forEach(({ stop, color }) => {
-    gradient.addColorStop(stop, `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${clampedAlpha})`);
+  const range = Math.max(1e-6, usableWidth);
+  const seen = new Set();
+
+  points.forEach((point, index) => {
+    if (!point || !Number.isFinite(point.x)) {
+      return;
+    }
+    const ratio = Math.min(1, Math.max(0, (point.x - margin) / range));
+    const key = Math.round(ratio * 1000);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    gradient.addColorStop(ratio, intensityToColor(point.intensity, clampAlpha));
   });
 
+  if (!seen.has(0)) {
+    const start = points.find((point) => point && Number.isFinite(point.x));
+    const color = start ? intensityToColor(start.intensity, clampAlpha) : intensityToColor(0.5, clampAlpha);
+    gradient.addColorStop(0, color);
+  }
+  if (!seen.has(1000)) {
+    const end = [...points].reverse().find((point) => point && Number.isFinite(point.x));
+    const color = end ? intensityToColor(end.intensity, clampAlpha) : intensityToColor(0.5, clampAlpha);
+    gradient.addColorStop(1, color);
+  }
+
   return gradient;
+}
+
+function intensityToColor(value, alpha = 1) {
+  const t = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.5));
+  for (let i = 0; i < RAINBOW_GRADIENT.length - 1; i += 1) {
+    const current = RAINBOW_GRADIENT[i];
+    const next = RAINBOW_GRADIENT[i + 1];
+    if (t <= next.stop) {
+      const span = next.stop - current.stop || 1;
+      const localT = Math.min(1, Math.max(0, (t - current.stop) / span));
+      const r = Math.round(current.color[0] + (next.color[0] - current.color[0]) * localT);
+      const g = Math.round(current.color[1] + (next.color[1] - current.color[1]) * localT);
+      const b = Math.round(current.color[2] + (next.color[2] - current.color[2]) * localT);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+  }
+  const last = RAINBOW_GRADIENT[RAINBOW_GRADIENT.length - 1];
+  return `rgba(${last.color[0]}, ${last.color[1]}, ${last.color[2]}, ${alpha})`;
 }
 
 function smoothSeries(series) {
@@ -916,13 +941,17 @@ function drawAudioSurface(width, height, domain) {
   const baseline = height - margin + AUDIO_STYLE.offset;
   const amplitude = 52;
 
+  const audioPoints = [];
+
   // Draw audio as a simple filled waveform
   ctx.beginPath();
   ctx.moveTo(margin, baseline);
   
   state.audio.times.forEach((time, idx) => {
     const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-    const y = baseline - state.audio.rms[idx] * amplitude;
+    const intensity = Math.min(1, Math.max(0, state.audio.rms[idx] ?? 0));
+    const y = baseline - intensity * amplitude;
+    audioPoints.push({ x, intensity });
     
     if (idx === 0) {
       ctx.lineTo(x, y);
@@ -930,7 +959,8 @@ function drawAudioSurface(width, height, domain) {
       // Smooth the line
       const prevX = margin + ((state.audio.times[idx-1] - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
       const cpX = (prevX + x) / 2;
-      const prevY = baseline - state.audio.rms[idx-1] * amplitude;
+      const prevIntensity = Math.min(1, Math.max(0, state.audio.rms[idx - 1] ?? 0));
+      const prevY = baseline - prevIntensity * amplitude;
       const cpY = (prevY + y) / 2;
       ctx.quadraticCurveTo(cpX, cpY, x, y);
     }
@@ -939,13 +969,7 @@ function drawAudioSurface(width, height, domain) {
   ctx.lineTo(margin + usableWidth, baseline);
   ctx.closePath();
   
-  const fillGradient = createRainbowGradient(
-    margin,
-    baseline,
-    margin + usableWidth,
-    0.35,
-    0.68,
-  );
+  const fillGradient = createIntensityGradient(audioPoints, margin, usableWidth, 0.42);
   ctx.save();
   ctx.fillStyle = fillGradient;
   ctx.shadowColor = 'rgba(5, 12, 30, 0.32)';
@@ -962,13 +986,7 @@ function drawAudioSurface(width, height, domain) {
   ctx.fill();
   ctx.restore();
 
-  const strokeGradient = createRainbowGradient(
-    margin,
-    baseline - amplitude,
-    margin + usableWidth,
-    0.85,
-    0.68,
-  );
+  const strokeGradient = createIntensityGradient(audioPoints, margin, usableWidth, 0.85);
   ctx.beginPath();
   ctx.moveTo(margin, baseline);
   state.audio.times.forEach((time, idx) => {
