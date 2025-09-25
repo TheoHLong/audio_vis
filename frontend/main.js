@@ -232,10 +232,6 @@ function updateButtons() {
   startBtn.classList.toggle('ghost', listening);
 }
 
-startBtn.addEventListener('click', () => {
-  if (!listening) {
-    startListening();
-  } else {
 function renderScene() {
   resizeCanvas();
   const rect = canvas.getBoundingClientRect();
