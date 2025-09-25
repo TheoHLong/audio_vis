@@ -3,13 +3,23 @@ from __future__ import annotations
 import logging
 import math
 import re
+import sys
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
-import torch
+
+# Suppress transformers warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
+# Set up more detailed logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 
 @dataclass
@@ -39,52 +49,103 @@ class KeywordExtractor:
     def __post_init__(self) -> None:
         disable = math.isclose(self.window_seconds, 0.0)
         if disable:
-            logger.info("KeywordExtractor disabled by configuration")
+            logger.info("KeywordExtractor disabled by configuration (window_seconds=0)")
             return
+        
+        logger.info("Initializing Whisper model for keyword extraction...")
+        
         try:
+            # Import required modules
+            import torch
             from transformers import pipeline
             
-            # Detect best available device
-            if torch.cuda.is_available():
-                device = 0  # Use first GPU
-                logger.info("Using GPU for Whisper model")
-            elif torch.backends.mps.is_available():
-                device = "mps"  # Use Apple Silicon GPU
-                logger.info("Using MPS (Apple Silicon) for Whisper model")
-            else:
-                device = -1  # Use CPU
-                logger.info("Using CPU for Whisper model")
-
-            # Initialize the pipeline with better configuration
-            self._pipeline = pipeline(
-                "automatic-speech-recognition",
-                model="openai/whisper-tiny.en",
-                device=device,
-                chunk_length_s=30,  # Process audio in 30-second chunks
-                stride_length_s=5,   # Overlap between chunks
-                return_timestamps=False,  # We don't need word-level timestamps
-                generate_kwargs={
-                    "task": "transcribe",
-                    "language": "en",
-                    "max_new_tokens": 128,  # Increased from 64
-                }
-            )
+            logger.info(f"PyTorch version: {torch.__version__}")
             
-            # Test the pipeline with a dummy input
-            test_audio = np.zeros(self.sample_rate, dtype=np.float32)
-            test_result = self._pipeline(
-                {"array": test_audio, "sampling_rate": self.sample_rate}
-            )
-            logger.info(f"Whisper test successful. Test output: {test_result}")
+            # Detect best available device - simplified
+            device = -1  # Default to CPU
+            device_name = "CPU"
             
-            self._ready = True
-            logger.info("KeywordExtractor initialised successfully with openai/whisper-tiny.en")
+            try:
+                if torch.cuda.is_available():
+                    device = 0
+                    device_name = f"CUDA GPU ({torch.cuda.get_device_name(0)})"
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    device = "mps"
+                    device_name = "Apple Silicon (MPS)"
+            except Exception as e:
+                logger.warning(f"Device detection issue: {e}, using CPU")
+                device = -1
+                device_name = "CPU"
             
-        except Exception as exc:
-            logger.error(f"Failed to initialize Whisper model: {exc}", exc_info=True)
+            logger.info(f"Selected device: {device_name}")
+            
+            # Initialize the pipeline with simpler configuration
+            logger.info("Loading openai/whisper-tiny.en model...")
+            
+            try:
+                self._pipeline = pipeline(
+                    "automatic-speech-recognition",
+                    model="openai/whisper-tiny.en",
+                    device=device,
+                    torch_dtype=torch.float32
+                )
+                
+                logger.info("Whisper model loaded successfully!")
+                
+                # Quick test without audio to verify it's loaded
+                logger.info("Testing Whisper model initialization...")
+                # Create a very short test audio (0.1 seconds of silence)
+                test_samples = int(self.sample_rate * 0.1)
+                test_audio = np.zeros(test_samples, dtype=np.float32)
+                
+                # Try a simple transcription
+                test_result = self._pipeline(
+                    {"array": test_audio, "sampling_rate": self.sample_rate},
+                    generate_kwargs={"max_new_tokens": 10}
+                )
+                
+                logger.info(f"Whisper test completed. Result type: {type(test_result)}")
+                if isinstance(test_result, dict):
+                    logger.info(f"Test transcription: '{test_result.get('text', '')}'")
+                
+                self._ready = True
+                logger.info("✅ KeywordExtractor is ready and operational!")
+                
+            except Exception as model_error:
+                logger.error(f"Failed to load Whisper model: {model_error}")
+                logger.info("Attempting fallback initialization...")
+                
+                # Try a simpler initialization
+                self._pipeline = pipeline(
+                    "automatic-speech-recognition",
+                    model="openai/whisper-tiny.en",
+                    device=-1  # Force CPU
+                )
+                
+                self._ready = True
+                logger.info("✅ KeywordExtractor initialized with CPU fallback")
+                
+        except ImportError as import_error:
+            logger.error(f"Missing required dependencies: {import_error}")
+            logger.error("Please install transformers and torch: pip install transformers torch")
             self._pipeline = None
             self._ready = False
-            self.last_transcript = ""
+            
+        except Exception as exc:
+            logger.error(f"Unexpected error during Whisper initialization: {exc}", exc_info=True)
+            self._pipeline = None
+            self._ready = False
+        
+        # Log final status
+        if self._ready:
+            logger.info("=" * 60)
+            logger.info("WHISPER STATUS: ✅ ONLINE")
+            logger.info("=" * 60)
+        else:
+            logger.error("=" * 60)
+            logger.error("WHISPER STATUS: ❌ FAILED TO INITIALIZE")
+            logger.error("Check the logs above for details")
+            logger.error("=" * 60)
 
     @property
     def window_size(self) -> int:
@@ -105,11 +166,9 @@ class KeywordExtractor:
 
     def maybe_extract(self, timestamp: float) -> List[KeywordCandidate]:
         if not self._ready:
-            logger.debug("KeywordExtractor not ready, skipping extraction")
             return []
         
         if self._buffer.shape[0] < self.window_size:
-            logger.debug(f"Buffer too small: {self._buffer.shape[0]} < {self.window_size}")
             return []
         
         if timestamp - self._last_emit < self.stride_seconds:
@@ -117,26 +176,28 @@ class KeywordExtractor:
         
         window = self._buffer[-self.window_size:]
         
-        # Normalize audio to prevent silent input issues
-        window_normalized = window.astype(np.float32)
-        max_val = np.abs(window_normalized).max()
-        if max_val > 0:
-            window_normalized = window_normalized / max_val
+        # Check if audio has any content
+        max_val = np.abs(window).max()
+        if max_val < 1e-6:  # Nearly silent
+            self._last_emit = timestamp
+            return self._tokens[-self.max_keywords:] if self._tokens else []
+        
+        # Normalize audio if needed
+        if max_val < 0.01:  # Very quiet audio
+            window = window / max_val * 0.1
         
         try:
-            # Log the audio properties for debugging
-            rms = np.sqrt(np.mean(window_normalized**2))
-            logger.debug(f"Processing audio window: RMS={rms:.4f}, shape={window.shape}")
-            
-            # Call the Whisper pipeline
+            # Simple transcription call
             result = self._pipeline(
-                {"array": window_normalized, "sampling_rate": self.sample_rate}
+                {"array": window, "sampling_rate": self.sample_rate},
+                generate_kwargs={
+                    "max_new_tokens": 128,
+                    "language": "en",
+                    "task": "transcribe"
+                }
             )
             
-            # Log the raw result for debugging
-            logger.debug(f"Whisper raw result: {result}")
-            
-            # Extract text from result - handle different response formats
+            # Extract text from result
             if isinstance(result, dict):
                 text = result.get("text", "")
             elif isinstance(result, list) and len(result) > 0:
@@ -144,17 +205,18 @@ class KeywordExtractor:
             else:
                 text = str(result) if result else ""
             
-            logger.info(f"Transcribed text: '{text}'")
+            # Log successful transcriptions
+            if text and text.strip():
+                logger.info(f"🎤 Transcribed: '{text.strip()}'")
             
         except Exception as exc:
-            logger.error(f"Keyword extraction failed: {exc}", exc_info=True)
-            return []
+            logger.error(f"Transcription error: {exc}")
+            text = ""
         
         cleaned = text.strip()
         if cleaned and cleaned != self._prev_transcript:
             self._transcript_history.append((timestamp, cleaned))
             self._prev_transcript = cleaned
-            logger.info(f"New transcript segment: '{cleaned}'")
         
         # Clean up old transcript history
         cutoff = timestamp - 12.0
@@ -163,8 +225,6 @@ class KeywordExtractor:
         
         # Update the full transcript
         self.last_transcript = " ".join(segment for _, segment in self._transcript_history).strip()
-        if self.last_transcript:
-            logger.debug(f"Full transcript: '{self.last_transcript}'")
         
         # Extract keywords from the text
         keywords = self._extract_keywords(text)
@@ -175,9 +235,6 @@ class KeywordExtractor:
             KeywordCandidate(text=word, confidence=conf, timestamp=timestamp, expires_at=expires_at)
             for word, conf in keywords
         ]
-        
-        if candidates:
-            logger.debug(f"Extracted keywords: {[c.text for c in candidates]}")
         
         self._tokens.extend(candidates)
         # Keep only recent tokens
