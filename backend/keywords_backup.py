@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -43,45 +42,17 @@ class KeywordExtractor:
             return
         try:
             from transformers import pipeline
-            
-            # Detect best available device
-            if torch.cuda.is_available():
-                device = 0  # Use first GPU
-                logger.info("Using GPU for Whisper model")
-            elif torch.backends.mps.is_available():
-                device = "mps"  # Use Apple Silicon GPU
-                logger.info("Using MPS (Apple Silicon) for Whisper model")
-            else:
-                device = -1  # Use CPU
-                logger.info("Using CPU for Whisper model")
 
-            # Initialize the pipeline with better configuration
             self._pipeline = pipeline(
                 "automatic-speech-recognition",
                 model="openai/whisper-tiny.en",
-                device=device,
-                chunk_length_s=30,  # Process audio in 30-second chunks
-                stride_length_s=5,   # Overlap between chunks
-                return_timestamps=False,  # We don't need word-level timestamps
-                generate_kwargs={
-                    "task": "transcribe",
-                    "language": "en",
-                    "max_new_tokens": 128,  # Increased from 64
-                }
+                device=-1,
+                generation_config={"task": "transcribe", "max_new_tokens": 64},
             )
-            
-            # Test the pipeline with a dummy input
-            test_audio = np.zeros(self.sample_rate, dtype=np.float32)
-            test_result = self._pipeline(
-                {"array": test_audio, "sampling_rate": self.sample_rate}
-            )
-            logger.info(f"Whisper test successful. Test output: {test_result}")
-            
             self._ready = True
-            logger.info("KeywordExtractor initialised successfully with openai/whisper-tiny.en")
-            
-        except Exception as exc:
-            logger.error(f"Failed to initialize Whisper model: {exc}", exc_info=True)
+            logger.info("KeywordExtractor initialised with openai/whisper-tiny.en")
+        except Exception as exc:  # pragma: no cover - hardware/env dependent
+            logger.warning("Keyword extraction disabled (%s)", exc)
             self._pipeline = None
             self._ready = False
             self.last_transcript = ""
@@ -105,85 +76,38 @@ class KeywordExtractor:
 
     def maybe_extract(self, timestamp: float) -> List[KeywordCandidate]:
         if not self._ready:
-            logger.debug("KeywordExtractor not ready, skipping extraction")
             return []
-        
         if self._buffer.shape[0] < self.window_size:
-            logger.debug(f"Buffer too small: {self._buffer.shape[0]} < {self.window_size}")
             return []
-        
         if timestamp - self._last_emit < self.stride_seconds:
             return []
-        
-        window = self._buffer[-self.window_size:]
-        
-        # Normalize audio to prevent silent input issues
-        window_normalized = window.astype(np.float32)
-        max_val = np.abs(window_normalized).max()
-        if max_val > 0:
-            window_normalized = window_normalized / max_val
-        
+        window = self._buffer[-self.window_size :]
         try:
-            # Log the audio properties for debugging
-            rms = np.sqrt(np.mean(window_normalized**2))
-            logger.debug(f"Processing audio window: RMS={rms:.4f}, shape={window.shape}")
-            
-            # Call the Whisper pipeline
-            result = self._pipeline(
-                {"array": window_normalized, "sampling_rate": self.sample_rate}
-            )
-            
-            # Log the raw result for debugging
-            logger.debug(f"Whisper raw result: {result}")
-            
-            # Extract text from result - handle different response formats
-            if isinstance(result, dict):
-                text = result.get("text", "")
-            elif isinstance(result, list) and len(result) > 0:
-                text = result[0].get("text", "")
-            else:
-                text = str(result) if result else ""
-            
-            logger.info(f"Transcribed text: '{text}'")
-            
-        except Exception as exc:
-            logger.error(f"Keyword extraction failed: {exc}", exc_info=True)
+            result = self._pipeline({"array": window, "sampling_rate": self.sample_rate})
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            logger.warning("Keyword extraction failed: %s", exc)
             return []
-        
+        text = result.get("text", "")
         cleaned = text.strip()
         if cleaned and cleaned != self._prev_transcript:
             self._transcript_history.append((timestamp, cleaned))
             self._prev_transcript = cleaned
-            logger.info(f"New transcript segment: '{cleaned}'")
-        
-        # Clean up old transcript history
         cutoff = timestamp - 12.0
         if cutoff > 0:
             self._transcript_history = [item for item in self._transcript_history if item[0] >= cutoff]
-        
-        # Update the full transcript
         self.last_transcript = " ".join(segment for _, segment in self._transcript_history).strip()
-        if self.last_transcript:
-            logger.debug(f"Full transcript: '{self.last_transcript}'")
-        
-        # Extract keywords from the text
         keywords = self._extract_keywords(text)
         self._last_emit = timestamp
         expires_at = timestamp + 2.0
-        
         candidates = [
             KeywordCandidate(text=word, confidence=conf, timestamp=timestamp, expires_at=expires_at)
             for word, conf in keywords
         ]
-        
-        if candidates:
-            logger.debug(f"Extracted keywords: {[c.text for c in candidates]}")
-        
         self._tokens.extend(candidates)
         # Keep only recent tokens
         self._tokens = [token for token in self._tokens if token.expires_at > timestamp]
         # Return the latest ones (max_keywords)
-        return self._tokens[-self.max_keywords:]
+        return self._tokens[-self.max_keywords :]
 
     def _extract_keywords(self, text: str) -> List[tuple[str, float]]:
         words = re.findall(r"[a-zA-Z']+", text.lower())
