@@ -9,16 +9,16 @@ const modePill = document.getElementById('mode-pill');
 const transcriptText = document.getElementById('transcript-text');
 
 const TARGET_SAMPLE_RATE = 16_000;
-const MAX_NEURON_SAMPLES = 48;
+const MAX_NEURON_SAMPLES = 24; // Reduced for cleaner heatmap visualization
 const HISTORY_SECONDS = 15;
 
 const LAYER_ORDER = ['L10', 'L6', 'L2'];
 const LAYER_CONFIG = {
-  L10: { color: '#a855f7', offset: 90, label: 'Layer 10 · semantics' },
-  L6: { color: '#f97316', offset: 55, label: 'Layer 6 · prosody' },
-  L2: { color: '#22d3ee', offset: 20, label: 'Layer 2 · voiceprint' },
+  L10: { color: '#a855f7', offset: 120, label: 'Layer 10 · semantics' },
+  L6: { color: '#f97316', offset: 80, label: 'Layer 6 · prosody' },
+  L2: { color: '#22d3ee', offset: 40, label: 'Layer 2 · voiceprint' },
 };
-const AUDIO_STYLE = { color: '#38bdf8', offset: -10, label: 'Audio waveform' };
+const AUDIO_STYLE = { color: '#38bdf8', offset: 0, label: 'Audio waveform' };
 
 const state = {
   layers: [],
@@ -238,6 +238,13 @@ function renderScene() {
   const width = rect.width;
   const height = rect.height;
   ctx.clearRect(0, 0, width, height);
+  
+  // Add subtle background gradient for depth
+  const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+  bgGradient.addColorStop(0, 'rgba(10, 15, 30, 0.05)');
+  bgGradient.addColorStop(1, 'rgba(10, 15, 30, 0.15)');
+  ctx.fillStyle = bgGradient;
+  ctx.fillRect(0, 0, width, height);
 
   const activeLayers = LAYER_ORDER
     .map((name) => state.layers.find((layer) => layer.name === name))
@@ -317,10 +324,12 @@ function computeDomain(layers, audio) {
 function drawGrid(width, height, domain) {
   const margin = 70;
   const usableWidth = width - margin * 2;
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.16)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([5, 7]);
-  const cols = 6;
+  
+  // Draw subtle vertical grid lines
+  ctx.strokeStyle = 'rgba(148, 197, 255, 0.08)';
+  ctx.lineWidth = 0.5;
+  ctx.setLineDash([2, 8]);
+  const cols = 10;
   for (let i = 0; i <= cols; i += 1) {
     const ratio = i / cols;
     const x = margin + ratio * usableWidth;
@@ -329,15 +338,27 @@ function drawGrid(width, height, domain) {
     ctx.lineTo(x, height - margin * 0.5);
     ctx.stroke();
   }
+  
+  // Draw subtle horizontal lines for layer boundaries
+  ctx.strokeStyle = 'rgba(148, 197, 255, 0.06)';
+  LAYER_ORDER.forEach(layerName => {
+    const config = LAYER_CONFIG[layerName];
+    const y = height - margin - config.offset;
+    ctx.beginPath();
+    ctx.moveTo(margin, y);
+    ctx.lineTo(margin + usableWidth, y);
+    ctx.stroke();
+  });
+  
   ctx.setLineDash([]);
 }
 
 function drawLayerSurface(width, height, layer, domain, config = {}) {
   const margin = 70;
   const usableWidth = width - margin * 2;
-  const depth = 90;
-  const amplitude = 80;
-  const angle = Math.PI / 6;
+  const depth = 60; // Reduced depth for cleaner look
+  const amplitude = 40; // Reduced amplitude
+  const angle = Math.PI / 8; // Shallower angle
   const cosA = Math.cos(angle);
   const sinA = Math.sin(angle);
   const stats = domain.stats[layer.name];
@@ -348,53 +369,75 @@ function drawLayerSurface(width, height, layer, domain, config = {}) {
   const neuronCount = stats.neuronCount;
   const sampleStep = Math.max(1, Math.floor(neuronCount / MAX_NEURON_SAMPLES));
 
-  ctx.globalAlpha = 0.3;
+  // Create heatmap-style grid instead of filled polygons
+  const timeSteps = layer.times.length;
+  const cellWidth = usableWidth / timeSteps;
+  const cellHeight = depth / (neuronCount / sampleStep);
+
+  // Draw heatmap cells
   layer.vectors.forEach((vector, timeIndex) => {
     const timeNorm = (layer.times[timeIndex] - domain.minTime) / (domain.maxTime - domain.minTime);
-    ctx.beginPath();
+    const baseX = margin + timeNorm * usableWidth;
+    
     for (let neuron = 0; neuron < neuronCount; neuron += sampleStep) {
       const colNorm = neuronCount > 1 ? neuron / (neuronCount - 1) : 0;
       const activity = vector[neuron];
       const normActivity = (activity - stats.min) / (stats.max - stats.min);
-      const x = margin + timeNorm * usableWidth + colNorm * depth * cosA;
-      const y = baseline + colNorm * depth * sinA - (normActivity - 0.5) * amplitude;
-      if (neuron === 0) {
-        ctx.moveTo(x, baseline + colNorm * depth * sinA);
-        ctx.lineTo(x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
+      
+      // Position with 3D projection
+      const x = baseX + colNorm * depth * cosA;
+      const y = baseline + colNorm * depth * sinA - normActivity * amplitude;
+      
+      // Draw heatmap cell with intensity-based opacity
+      const intensity = normActivity;
+      ctx.fillStyle = hexToRgba(config.color || '#cbd5f5', intensity * 0.7 + 0.1);
+      
+      // Draw small rectangle for each data point
+      ctx.fillRect(x - cellWidth/2, y - 2, cellWidth, 4);
     }
-    ctx.lineTo(margin + timeNorm * usableWidth + depth * cosA, baseline + depth * sinA);
-    ctx.closePath();
-    const gradient = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline + depth * sinA);
-    gradient.addColorStop(0, hexToRgba(config.color || '#cbd5f5', 0.55));
-    gradient.addColorStop(1, hexToRgba(config.color || '#cbd5f5', 0.05));
-    ctx.fillStyle = gradient;
-    ctx.fill();
   });
-  ctx.globalAlpha = 1;
 
-  ctx.lineWidth = 2;
-  const colorsBySpeaker = state.speakerColors || {};
-  for (let neuron = 0; neuron < neuronCount; neuron += sampleStep) {
+  // Draw ridge lines - fewer lines for cleaner look
+  const ridgeStep = Math.max(4, Math.floor(neuronCount / 8)); // Only draw ~8 ridge lines
+  ctx.lineWidth = 1.5;
+  
+  for (let neuron = 0; neuron < neuronCount; neuron += ridgeStep) {
     const colNorm = neuronCount > 1 ? neuron / (neuronCount - 1) : 0;
+    
+    // Create smooth ridge line using moving average
     ctx.beginPath();
+    ctx.strokeStyle = hexToRgba(config.color || '#cbd5f5', 0.4);
+    
+    let prevX = 0, prevY = 0;
     layer.vectors.forEach((vector, timeIndex) => {
       const timeNorm = (layer.times[timeIndex] - domain.minTime) / (domain.maxTime - domain.minTime);
-      const activity = vector[neuron];
-      const normActivity = (activity - stats.min) / (stats.max - stats.min);
-      const speaker = layer.speakers[timeIndex];
-      const color = colorsBySpeaker[String(speaker)] || config.color || '#cbd5f5';
+      
+      // Calculate smoothed activity (average with neighbors)
+      let smoothedActivity = vector[neuron];
+      if (timeIndex > 0 && timeIndex < layer.vectors.length - 1) {
+        const prev = layer.vectors[timeIndex - 1][neuron];
+        const next = layer.vectors[timeIndex + 1][neuron];
+        smoothedActivity = (prev + vector[neuron] * 2 + next) / 4;
+      }
+      
+      const normActivity = (smoothedActivity - stats.min) / (stats.max - stats.min);
       const x = margin + timeNorm * usableWidth + colNorm * depth * cosA;
-      const y = baseline + colNorm * depth * sinA - (normActivity - 0.5) * amplitude;
-      ctx.strokeStyle = hexToRgba(color, state.showGrid ? 0.95 : 0.8);
+      const y = baseline + colNorm * depth * sinA - normActivity * amplitude;
+      
       if (timeIndex === 0) {
         ctx.moveTo(x, y);
+        prevX = x;
+        prevY = y;
       } else {
-        ctx.lineTo(x, y);
+        // Smooth curve using quadratic bezier
+        const cpX = (prevX + x) / 2;
+        const cpY = (prevY + y) / 2;
+        ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
+        prevX = x;
+        prevY = y;
       }
     });
+    ctx.lineTo(prevX, prevY);
     ctx.stroke();
   }
 
@@ -409,25 +452,31 @@ function drawAudioSurface(width, height, domain) {
   const margin = 70;
   const usableWidth = width - margin * 2;
   const baseline = height - margin + AUDIO_STYLE.offset;
-  const amplitude = 35;
+  const amplitude = 20; // Reduced amplitude for subtler effect
 
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.8);
-  ctx.beginPath();
+  // Draw audio as subtle heatmap bars
+  const barWidth = Math.max(1, usableWidth / state.audio.times.length);
+  
   state.audio.times.forEach((time, idx) => {
     const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-    const y = baseline - (state.audio.rms[idx] - 0.5) * amplitude * 2;
-    if (idx === 0) {
-      ctx.moveTo(x, baseline);
-      ctx.lineTo(x, y);
-    } else {
-      ctx.lineTo(x, y);
-    }
+    const rms = state.audio.rms[idx];
+    const barHeight = rms * amplitude;
+    
+    // Draw gradient bar for each audio sample
+    const gradient = ctx.createLinearGradient(0, baseline - barHeight, 0, baseline);
+    gradient.addColorStop(0, hexToRgba(AUDIO_STYLE.color, rms * 0.6));
+    gradient.addColorStop(1, hexToRgba(AUDIO_STYLE.color, 0.1));
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x - barWidth/2, baseline - barHeight, barWidth, barHeight);
   });
+  
+  // Draw subtle baseline
+  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.3);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin, baseline);
   ctx.lineTo(margin + usableWidth, baseline);
   ctx.stroke();
-  ctx.fillStyle = hexToRgba(AUDIO_STYLE.color, 0.15);
-  ctx.fill();
 
   ctx.fillStyle = 'rgba(148, 197, 255, 0.65)';
   ctx.font = '12px "Inter", system-ui';
