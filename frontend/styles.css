@@ -169,7 +169,19 @@ button:hover {
 
 
 .legend-dot.ridge {
-  background: linear-gradient(135deg, #000083, #003caa 30%, #05ffff 55%, #ffff00 75%, #fa0000 90%, #800000);
+  background: linear-gradient(135deg, #000083, #05ffff 55%, #fa0000 90%);
+}
+
+.legend-dot.ridge-l10 {
+  background: linear-gradient(135deg, #000083, #0057ff 30%, #05ffff 55%, #fa0000 90%);
+}
+
+.legend-dot.ridge-l6 {
+  background: linear-gradient(135deg, #0b9eff, #05ffff 45%, #ffff00 75%, #fa0000);
+}
+
+.legend-dot.ridge-l2 {
+  background: linear-gradient(135deg, #fa0000, #ff7a00 45%, #05ffff 85%, #003caa);
 }
 
 .legend-dot.audio {

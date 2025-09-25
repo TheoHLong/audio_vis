@@ -13,9 +13,9 @@ const HISTORY_SECONDS = 15;
 
 const LAYER_ORDER = ['L10', 'L6', 'L2'];
 const LAYER_CONFIG = {
-  L10: { label: 'L10 · semantics' },
-  L6: { label: 'L6 · prosody' },
-  L2: { label: 'L2 · voiceprint' },
+  L10: { label: 'L10 · semantics (PC1–3)', gradientShift: 0.0 },
+  L6: { label: 'L6 · prosody (PC1–3)', gradientShift: 0.2 },
+  L2: { label: 'L2 · voiceprint (PC1–3)', gradientShift: 0.45 },
 };
 const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'waveform' };
 
@@ -32,6 +32,7 @@ const RIDGE_TOP_MARGIN = 110;
 const RIDGE_BOTTOM_MARGIN = 150;
 const RIDGE_MIN_BAND_HEIGHT = 80;
 const RIDGE_DEPTH_RATIO = 0.25;
+const COMPONENTS_PER_LAYER = 3;
 
 const state = {
   layers: [],
@@ -196,7 +197,8 @@ function handleMessage(message) {
     return;
   }
   if (data.type === 'layer_activity') {
-    state.layers = data.layers || [];
+    const rawLayers = data.layers || [];
+    state.layers = enrichLayers(rawLayers);
     state.audio = data.audio || { times: [], rms: [] };
     state.diagnostics = data.meta?.diagnostics || {};
     state.mode = data.meta?.mode || state.mode;
@@ -261,7 +263,7 @@ function renderScene() {
 
   const activeLayers = LAYER_ORDER
     .map((name) => state.layers.find((layer) => layer.name === name))
-    .filter((layer) => layer && layer.times?.length && layer.activities?.length);
+    .filter((layer) => layer && layer.times?.length && ((layer.components && layer.components.length) || layer.activities?.length));
   const hasAudio = state.audio?.times?.length;
 
   if (!activeLayers.length && !hasAudio) {
@@ -281,6 +283,238 @@ function renderScene() {
   if (hasAudio) {
     drawAudioSurface(width, height, domain);
   }
+}
+
+function enrichLayers(rawLayers) {
+  if (!Array.isArray(rawLayers)) {
+    return [];
+  }
+  return rawLayers.map((layer) => {
+    const times = Array.isArray(layer?.times) ? layer.times : [];
+    const vectors = Array.isArray(layer?.vectors) ? layer.vectors : [];
+    const components = computeLayerComponents(vectors, COMPONENTS_PER_LAYER);
+    return {
+      ...layer,
+      times,
+      vectors,
+      components,
+    };
+  });
+}
+
+function computeLayerComponents(vectors, componentCount) {
+  if (!Array.isArray(vectors) || vectors.length === 0) {
+    return [];
+  }
+  const sampleCount = vectors.length;
+  const dim = Array.isArray(vectors[0]) ? vectors[0].length : 0;
+  if (!dim) {
+    return [];
+  }
+
+  const sanitized = vectors
+    .filter((vec) => Array.isArray(vec) && vec.length === dim)
+    .map((vec) => {
+      const row = new Float64Array(dim);
+      for (let i = 0; i < dim; i += 1) {
+        const value = Number(vec[i]);
+        row[i] = Number.isFinite(value) ? value : 0;
+      }
+      return row;
+    });
+
+  if (sanitized.length < 2) {
+    return [];
+  }
+
+  const effectiveSamples = sanitized.length;
+  const mean = new Float64Array(dim);
+  sanitized.forEach((row) => {
+    for (let i = 0; i < dim; i += 1) {
+      mean[i] += row[i];
+    }
+  });
+  for (let i = 0; i < dim; i += 1) {
+    mean[i] /= effectiveSamples;
+  }
+
+  const centered = sanitized.map((row) => {
+    const centeredRow = new Float64Array(dim);
+    for (let i = 0; i < dim; i += 1) {
+      centeredRow[i] = row[i] - mean[i];
+    }
+    return centeredRow;
+  });
+
+  const covariance = Array.from({ length: dim }, () => new Float64Array(dim));
+  centered.forEach((row) => {
+    for (let i = 0; i < dim; i += 1) {
+      const vi = row[i];
+      if (!Number.isFinite(vi)) {
+        continue;
+      }
+      for (let j = i; j < dim; j += 1) {
+        const vj = row[j];
+        if (!Number.isFinite(vj)) {
+          continue;
+        }
+        covariance[i][j] += vi * vj;
+      }
+    }
+  });
+  const denom = Math.max(1, effectiveSamples - 1);
+  for (let i = 0; i < dim; i += 1) {
+    for (let j = i; j < dim; j += 1) {
+      const value = covariance[i][j] / denom;
+      covariance[i][j] = value;
+      if (j !== i) {
+        covariance[j][i] = value;
+      }
+    }
+  }
+
+  const working = covariance.map((row) => Float64Array.from(row));
+  const maxComponents = Math.min(componentCount, dim);
+  const components = [];
+
+  for (let c = 0; c < maxComponents; c += 1) {
+    const eigen = powerIteration(working);
+    if (!eigen || !Number.isFinite(eigen.eigenvalue) || eigen.eigenvalue <= 1e-6) {
+      break;
+    }
+    const basis = eigen.vector;
+    const projections = projectOntoComponent(centered, basis);
+    const series = Array.from(projections, (value) => Number.isFinite(value) ? value : 0);
+
+    let dominantIndex = 0;
+    let dominantWeight = -1;
+    for (let i = 0; i < basis.length; i += 1) {
+      const weight = Math.abs(basis[i]);
+      if (weight > dominantWeight) {
+        dominantWeight = weight;
+        dominantIndex = i;
+      }
+    }
+
+    components.push({
+      label: `PC${c + 1}`,
+      values: series,
+      eigenvalue: eigen.eigenvalue,
+      basis: Array.from(basis),
+      dominantIndex,
+    });
+
+    deflateMatrix(working, basis, eigen.eigenvalue);
+  }
+
+  return components;
+}
+
+function projectOntoComponent(vectors, component) {
+  const length = vectors.length;
+  const dim = component.length;
+  const output = new Float64Array(length);
+  for (let i = 0; i < length; i += 1) {
+    const row = vectors[i];
+    let sum = 0;
+    for (let j = 0; j < dim; j += 1) {
+      sum += row[j] * component[j];
+    }
+    output[i] = sum;
+  }
+  return output;
+}
+
+function deflateMatrix(matrix, vector, eigenvalue) {
+  const dim = vector.length;
+  for (let i = 0; i < dim; i += 1) {
+    const vi = vector[i];
+    for (let j = 0; j < dim; j += 1) {
+      matrix[i][j] -= eigenvalue * vi * vector[j];
+    }
+  }
+}
+
+function powerIteration(matrix, maxIterations = 48, tolerance = 1e-6) {
+  const dim = Array.isArray(matrix) ? matrix.length : 0;
+  if (!dim) {
+    return null;
+  }
+
+  let vector = new Float64Array(dim);
+  let norm = 0;
+  for (let i = 0; i < dim; i += 1) {
+    const value = Math.random() - 0.5;
+    vector[i] = value;
+    norm += value * value;
+  }
+  norm = Math.sqrt(norm) || 1;
+  for (let i = 0; i < dim; i += 1) {
+    vector[i] /= norm;
+  }
+
+  let eigenvalue = 0;
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const mv = multiplyMatrixVector(matrix, vector);
+    const mvNorm = vectorL2Norm(mv);
+    if (!Number.isFinite(mvNorm) || mvNorm <= tolerance) {
+      break;
+    }
+    for (let i = 0; i < dim; i += 1) {
+      mv[i] /= mvNorm;
+    }
+
+    const diff = vectorDifferenceNorm(mv, vector);
+    vector = mv;
+    const mv2 = multiplyMatrixVector(matrix, vector);
+    eigenvalue = dot(vector, mv2);
+    if (diff <= tolerance) {
+      break;
+    }
+  }
+
+  return { vector, eigenvalue };
+}
+
+function multiplyMatrixVector(matrix, vector) {
+  const dim = vector.length;
+  const result = new Float64Array(dim);
+  for (let i = 0; i < dim; i += 1) {
+    const row = matrix[i];
+    let sum = 0;
+    for (let j = 0; j < dim; j += 1) {
+      sum += row[j] * vector[j];
+    }
+    result[i] = sum;
+  }
+  return result;
+}
+
+function dot(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    sum += a[i] * b[i];
+  }
+  return sum;
+}
+
+function vectorL2Norm(vector) {
+  let sum = 0;
+  for (let i = 0; i < vector.length; i += 1) {
+    const value = vector[i];
+    sum += value * value;
+  }
+  return Math.sqrt(sum);
+}
+
+function vectorDifferenceNorm(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
 }
 
 function drawPlaceholder(width, height) {
@@ -306,7 +540,7 @@ function computeDomain(layers, audio) {
     maxTime = Math.max(maxTime, layer.times[layer.times.length - 1]);
 
     const sampleVector = (layer.vectors && layer.vectors[0]) || [];
-    const activitySeries = Array.isArray(layer.activities) ? layer.activities : [];
+    const components = Array.isArray(layer.components) ? layer.components : [];
     const indexSeries = Array.isArray(layer.indices) ? layer.indices : [];
 
     const neuronCount = Math.max(sampleVector.length, 1);
@@ -318,14 +552,54 @@ function computeDomain(layers, audio) {
       activityMax: Number.NEGATIVE_INFINITY,
       indexMin: Number.POSITIVE_INFINITY,
       indexMax: Number.NEGATIVE_INFINITY,
+      components: [],
     };
 
-    activitySeries.forEach((value) => {
-      if (Number.isFinite(value)) {
-        statEntry.activityMin = Math.min(statEntry.activityMin, value);
-        statEntry.activityMax = Math.max(statEntry.activityMax, value);
+    components.forEach((component) => {
+      const values = Array.isArray(component?.values) ? component.values : [];
+      let compMin = Number.POSITIVE_INFINITY;
+      let compMax = Number.NEGATIVE_INFINITY;
+      values.forEach((value) => {
+        if (Number.isFinite(value)) {
+          compMin = Math.min(compMin, value);
+          compMax = Math.max(compMax, value);
+        }
+      });
+      if (!Number.isFinite(compMin) || !Number.isFinite(compMax)) {
+        compMin = -1;
+        compMax = 1;
+      } else if (Math.abs(compMax - compMin) < 1e-6) {
+        const mid = compMin;
+        compMin = mid - 0.5;
+        compMax = mid + 0.5;
       }
+      statEntry.components.push({ min: compMin, max: compMax });
+      statEntry.activityMin = Math.min(statEntry.activityMin, compMin);
+      statEntry.activityMax = Math.max(statEntry.activityMax, compMax);
     });
+
+    if (!statEntry.components.length) {
+      const fallback = Array.isArray(layer.activities) ? layer.activities : [];
+      let compMin = Number.POSITIVE_INFINITY;
+      let compMax = Number.NEGATIVE_INFINITY;
+      fallback.forEach((value) => {
+        if (Number.isFinite(value)) {
+          compMin = Math.min(compMin, value);
+          compMax = Math.max(compMax, value);
+        }
+      });
+      if (!Number.isFinite(compMin) || !Number.isFinite(compMax)) {
+        compMin = -1;
+        compMax = 1;
+      } else if (Math.abs(compMax - compMin) < 1e-6) {
+        const mid = compMin;
+        compMin = mid - 0.5;
+        compMax = mid + 0.5;
+      }
+      statEntry.components.push({ min: compMin, max: compMax });
+      statEntry.activityMin = Math.min(statEntry.activityMin, compMin);
+      statEntry.activityMax = Math.max(statEntry.activityMax, compMax);
+    }
 
     indexSeries.forEach((value) => {
       if (Number.isFinite(value)) {
@@ -337,10 +611,6 @@ function computeDomain(layers, audio) {
     if (!Number.isFinite(statEntry.activityMin) || !Number.isFinite(statEntry.activityMax)) {
       statEntry.activityMin = -1;
       statEntry.activityMax = 1;
-    } else if (Math.abs(statEntry.activityMax - statEntry.activityMin) < 1e-6) {
-      const mid = statEntry.activityMin;
-      statEntry.activityMin = mid - 0.5;
-      statEntry.activityMax = mid + 0.5;
     }
 
     if (!Number.isFinite(statEntry.indexMin) || !Number.isFinite(statEntry.indexMax)) {
@@ -405,10 +675,17 @@ function drawGrid(width, height, domain) {
 
 function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, totalLayers = 1) {
   const layerTimes = Array.isArray(layer.times) ? layer.times : [];
-  const activitySeries = Array.isArray(layer.activities) ? layer.activities : [];
-  const indexSeries = Array.isArray(layer.indices) ? layer.indices : [];
-  const sampleCount = Math.min(layerTimes.length, activitySeries.length);
-  if (!sampleCount) {
+  if (!layerTimes.length) {
+    return;
+  }
+
+  const seriesList = Array.isArray(layer.components) && layer.components.length
+    ? layer.components.slice(0, COMPONENTS_PER_LAYER)
+    : Array.isArray(layer.activities)
+      ? [{ label: 'Activity', values: layer.activities.slice() }]
+      : [];
+  const componentCount = seriesList.length;
+  if (!componentCount) {
     return;
   }
 
@@ -427,124 +704,166 @@ function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, to
   const bottomMargin = RIDGE_BOTTOM_MARGIN;
   const availableHeight = Math.max(RIDGE_MIN_BAND_HEIGHT * totalLayers, height - topMargin - bottomMargin);
   const bandHeight = Math.max(RIDGE_MIN_BAND_HEIGHT, availableHeight / Math.max(totalLayers, 1));
-  const baseline = topMargin + index * bandHeight + bandHeight * 0.78;
-  const amplitude = bandHeight * 0.65;
+  const layerBaseline = topMargin + index * bandHeight + bandHeight * 0.78;
+  const amplitude = bandHeight * 0.62;
   const depthScale = bandHeight * RIDGE_DEPTH_RATIO;
+  const componentSpread = amplitude * 0.48;
 
   const timeRange = Math.max(1e-6, domain.maxTime - domain.minTime);
-  const activityRange = Math.max(1e-6, stats.activityMax - stats.activityMin);
   const indexRange = Math.max(1e-6, stats.indexMax - stats.indexMin);
+  const rawIndexSeries = Array.isArray(layer.indices) ? layer.indices : [];
+  const smoothedIndex = smoothSeries(rawIndexSeries.slice(0, layerTimes.length));
 
-  const activities = smoothSeries(activitySeries.slice(0, sampleCount));
-  const indices = smoothSeries(indexSeries.slice(0, sampleCount));
+  const bandTop = layerBaseline - amplitude - componentSpread * 0.75;
+  const bandBottom = layerBaseline + amplitude + componentSpread * 0.85 + depthScale;
+  const bandTopClamped = Math.max(20, bandTop);
+  const bandBottomClamped = Math.min(height - Math.max(60, bottomMargin * 0.6), bandBottom);
+  const bandHeightRect = Math.max(24, bandBottomClamped - bandTopClamped);
+  ctx.save();
+  ctx.fillStyle = 'rgba(12, 18, 35, 0.32)';
+  ctx.fillRect(margin, bandTopClamped, usableWidth, bandHeightRect);
+  ctx.restore();
 
-  const points = [];
-  for (let i = 0; i < sampleCount; i += 1) {
-    const time = layerTimes[i];
-    const activity = activities[i];
-    if (!Number.isFinite(time) || !Number.isFinite(activity)) {
+  for (let componentIndex = 0; componentIndex < componentCount; componentIndex += 1) {
+    const component = seriesList[componentIndex];
+    const values = Array.isArray(component?.values) ? component.values : [];
+    const sampleCount = Math.min(layerTimes.length, values.length);
+    if (sampleCount < 2) {
       continue;
     }
-    const x = margin + ((time - domain.minTime) / timeRange) * usableWidth;
-    if (!Number.isFinite(x)) {
+
+    const compStats = (stats.components && stats.components[componentIndex])
+      || { min: stats.activityMin, max: stats.activityMax };
+    const activityRange = Math.max(1e-6, compStats.max - compStats.min);
+    const smoothedValues = smoothSeries(values.slice(0, sampleCount));
+    const componentOffset = (componentIndex - (componentCount - 1) / 2) * componentSpread;
+    const gradientShift = (config.gradientShift || 0) + (componentIndex - (componentCount - 1) / 2) * 0.08;
+    const fillAlpha = 0.28 + ((componentCount - componentIndex) / componentCount) * 0.16;
+    const strokeAlpha = 0.65 + (componentIndex / Math.max(1, componentCount - 1)) * 0.25;
+
+    const points = [];
+    for (let i = 0; i < sampleCount; i += 1) {
+      const time = layerTimes[i];
+      const value = smoothedValues[i];
+      if (!Number.isFinite(time) || !Number.isFinite(value)) {
+        continue;
+      }
+      const x = margin + ((time - domain.minTime) / timeRange) * usableWidth;
+      if (!Number.isFinite(x)) {
+        continue;
+      }
+
+      const indexValue = Number.isFinite(smoothedIndex[i]) ? smoothedIndex[i] : stats.indexMin + indexRange / 2;
+      const indexNorm = Math.min(1, Math.max(0, (indexValue - stats.indexMin) / indexRange));
+      const depthOffset = (indexNorm - 0.5) * depthScale;
+
+      const activityNorm = Math.min(1, Math.max(0, (value - compStats.min) / activityRange));
+      const baselineForComponent = layerBaseline + componentOffset;
+      const y = baselineForComponent - activityNorm * amplitude + depthOffset;
+      points.push({ x, y });
+    }
+
+    if (points.length < 2) {
       continue;
     }
-    const activityNorm = Math.min(1, Math.max(0, (activity - stats.activityMin) / activityRange));
-    const indexValue = Number.isFinite(indices[i]) ? indices[i] : stats.indexMin + indexRange / 2;
-    const indexNorm = Math.min(1, Math.max(0, (indexValue - stats.indexMin) / indexRange));
-    const depthOffset = (indexNorm - 0.5) * depthScale;
-    const y = baseline - activityNorm * amplitude + depthOffset;
-    points.push({ x, y });
-  }
 
-  if (points.length < 2) {
-    return;
-  }
+    const baselineY = layerBaseline + componentOffset + depthScale;
+    const fillGradient = createRainbowGradient(
+      margin,
+      layerBaseline,
+      margin + usableWidth,
+      fillAlpha,
+      gradientShift,
+    );
+    const strokeGradient = createRainbowGradient(
+      margin,
+      layerBaseline - amplitude,
+      margin + usableWidth,
+      strokeAlpha,
+      gradientShift,
+    );
 
-  const baselineY = baseline + depthScale;
-  const fillGradient = createRainbowGradient(margin, baseline, margin + usableWidth, 0.45);
-  const strokeGradient = createRainbowGradient(margin, baseline - amplitude, margin + usableWidth, 0.9);
+    const traceRidgeShape = () => {
+      ctx.beginPath();
+      ctx.moveTo(margin, baselineY);
+      ctx.lineTo(points[0].x, baselineY);
+      ctx.lineTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const cpX = (prev.x + curr.x) / 2;
+        const cpY = (prev.y + curr.y) / 2;
+        ctx.quadraticCurveTo(prev.x, prev.y, cpX, cpY);
+      }
+      const lastPoint = points[points.length - 1];
+      ctx.lineTo(lastPoint.x, lastPoint.y);
+      ctx.lineTo(lastPoint.x, baselineY);
+      ctx.lineTo(margin + usableWidth, baselineY);
+      ctx.closePath();
+    };
 
-  const traceRidgeShape = () => {
+    const traceCrest = () => {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const cpX = (prev.x + curr.x) / 2;
+        const cpY = (prev.y + curr.y) / 2;
+        ctx.quadraticCurveTo(prev.x, prev.y, cpX, cpY);
+      }
+      const lastPoint = points[points.length - 1];
+      ctx.lineTo(lastPoint.x, lastPoint.y);
+    };
+
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    traceRidgeShape();
+    ctx.fillStyle = fillGradient;
+    ctx.shadowColor = 'rgba(5, 12, 30, 0.4)';
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 5;
+    ctx.fill();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0)';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    traceRidgeShape();
+    const verticalShade = ctx.createLinearGradient(0, layerBaseline - amplitude, 0, baselineY);
+    verticalShade.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
+    verticalShade.addColorStop(0.55, 'rgba(46, 72, 120, 0.08)');
+    verticalShade.addColorStop(1, 'rgba(6, 10, 22, 0.55)');
+    ctx.fillStyle = verticalShade;
+    ctx.fill();
+    ctx.restore();
+
+    ctx.shadowColor = 'rgba(0, 0, 0, 0)';
+    traceCrest();
+    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = strokeGradient;
+    ctx.stroke();
+
+    traceCrest();
+    ctx.lineWidth = 1.1;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.stroke();
+
     ctx.beginPath();
     ctx.moveTo(margin, baselineY);
-    ctx.lineTo(points[0].x, baselineY);
-    ctx.lineTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) {
-      const prev = points[i - 1];
-      const curr = points[i];
-      const cpX = (prev.x + curr.x) / 2;
-      const cpY = (prev.y + curr.y) / 2;
-      ctx.quadraticCurveTo(prev.x, prev.y, cpX, cpY);
-    }
-    const lastPoint = points[points.length - 1];
-    ctx.lineTo(lastPoint.x, lastPoint.y);
-    ctx.lineTo(lastPoint.x, baselineY);
     ctx.lineTo(margin + usableWidth, baselineY);
-    ctx.closePath();
-  };
+    ctx.strokeStyle = 'rgba(14, 21, 36, 0.38)';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
 
-  const traceCrest = () => {
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) {
-      const prev = points[i - 1];
-      const curr = points[i];
-      const cpX = (prev.x + curr.x) / 2;
-      const cpY = (prev.y + curr.y) / 2;
-      ctx.quadraticCurveTo(prev.x, prev.y, cpX, cpY);
-    }
-    const lastPoint = points[points.length - 1];
-    ctx.lineTo(lastPoint.x, lastPoint.y);
-  };
+    ctx.restore();
+  }
 
-  ctx.save();
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  traceRidgeShape();
-  ctx.fillStyle = fillGradient;
-  ctx.shadowColor = 'rgba(5, 12, 30, 0.45)';
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 6;
-  ctx.fill();
-
-  ctx.save();
-  ctx.globalCompositeOperation = 'source-atop';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0)';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 0;
-  traceRidgeShape();
-  const verticalShade = ctx.createLinearGradient(0, baseline - amplitude, 0, baselineY);
-  verticalShade.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
-  verticalShade.addColorStop(0.5, 'rgba(46, 72, 120, 0.08)');
-  verticalShade.addColorStop(1, 'rgba(6, 10, 22, 0.55)');
-  ctx.fillStyle = verticalShade;
-  ctx.fill();
-  ctx.restore();
-
-  ctx.shadowColor = 'rgba(0, 0, 0, 0)';
-  traceCrest();
-  ctx.lineWidth = 2.6;
-  ctx.strokeStyle = strokeGradient;
-  ctx.stroke();
-
-  traceCrest();
-  ctx.lineWidth = 1.2;
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(margin, baselineY);
-  ctx.lineTo(margin + usableWidth, baselineY);
-  ctx.strokeStyle = 'rgba(14, 21, 36, 0.45)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  ctx.restore();
-
-  const labelY = Math.max(36, baseline - amplitude - depthScale - 12);
+  const labelY = Math.max(36, layerBaseline - amplitude - componentSpread * 0.6 - depthScale - 12);
   ctx.save();
   ctx.fillStyle = 'rgba(220, 232, 250, 0.92)';
   ctx.font = '12px "Inter", system-ui';
@@ -556,11 +875,22 @@ function drawLayerRidge(width, height, layer, domain, config = {}, index = 0, to
   ctx.restore();
 }
 
-function createRainbowGradient(x0, y0, x1, alpha = 1) {
+function createRainbowGradient(x0, y0, x1, alpha = 1, shift = 0) {
   const gradient = ctx.createLinearGradient(x0, y0, x1, y0);
-  RAINBOW_GRADIENT.forEach(({ stop, color }) => {
-    gradient.addColorStop(stop, `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`);
+  const clampedAlpha = Math.min(1, Math.max(0, alpha));
+  const normalizedShift = ((shift % 1) + 1) % 1;
+  const shiftedStops = RAINBOW_GRADIENT.map(({ stop, color }) => {
+    let shifted = stop - normalizedShift;
+    if (shifted < 0) {
+      shifted += 1;
+    }
+    return { stop: shifted, color };
+  }).sort((a, b) => a.stop - b.stop);
+
+  shiftedStops.forEach(({ stop, color }) => {
+    gradient.addColorStop(stop, `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${clampedAlpha})`);
   });
+
   return gradient;
 }
 
@@ -584,7 +914,7 @@ function drawAudioSurface(width, height, domain) {
   const margin = 100;
   const usableWidth = width - margin * 2;
   const baseline = height - margin + AUDIO_STYLE.offset;
-  const amplitude = 40; // Increased for better visibility
+  const amplitude = 52;
 
   // Draw audio as a simple filled waveform
   ctx.beginPath();
@@ -609,16 +939,60 @@ function drawAudioSurface(width, height, domain) {
   ctx.lineTo(margin + usableWidth, baseline);
   ctx.closePath();
   
-  // Fill with stronger gradient for better visibility
-  const gradient = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline);
-  gradient.addColorStop(0, hexToRgba(AUDIO_STYLE.color, 0.6));
-  gradient.addColorStop(0.5, hexToRgba(AUDIO_STYLE.color, 0.3));
-  gradient.addColorStop(1, hexToRgba(AUDIO_STYLE.color, 0.05));
-  ctx.fillStyle = gradient;
+  const fillGradient = createRainbowGradient(
+    margin,
+    baseline,
+    margin + usableWidth,
+    0.35,
+    0.68,
+  );
+  ctx.save();
+  ctx.fillStyle = fillGradient;
+  ctx.shadowColor = 'rgba(5, 12, 30, 0.32)';
+  ctx.shadowBlur = 12;
+  ctx.shadowOffsetY = 4;
   ctx.fill();
-  
-  // Add stronger outline
-  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.5);
+
+  ctx.globalCompositeOperation = 'source-atop';
+  const audioShade = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline + amplitude * 0.35);
+  audioShade.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
+  audioShade.addColorStop(0.6, 'rgba(20, 40, 78, 0.12)');
+  audioShade.addColorStop(1, 'rgba(6, 12, 24, 0.6)');
+  ctx.fillStyle = audioShade;
+  ctx.fill();
+  ctx.restore();
+
+  const strokeGradient = createRainbowGradient(
+    margin,
+    baseline - amplitude,
+    margin + usableWidth,
+    0.85,
+    0.68,
+  );
+  ctx.beginPath();
+  ctx.moveTo(margin, baseline);
+  state.audio.times.forEach((time, idx) => {
+    const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
+    const y = baseline - state.audio.rms[idx] * amplitude;
+    if (idx === 0) {
+      ctx.lineTo(x, y);
+    } else {
+      const prevX = margin + ((state.audio.times[idx - 1] - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
+      const cpX = (prevX + x) / 2;
+      const prevY = baseline - state.audio.rms[idx - 1] * amplitude;
+      const cpY = (prevY + y) / 2;
+      ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
+    }
+  });
+  ctx.lineTo(margin + usableWidth, baseline);
+  ctx.strokeStyle = strokeGradient;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(margin, baseline);
+  ctx.lineTo(margin + usableWidth, baseline);
+  ctx.strokeStyle = 'rgba(12, 18, 35, 0.5)';
   ctx.lineWidth = 1;
   ctx.stroke();
 
@@ -635,15 +1009,6 @@ function drawAudioSurface(width, height, domain) {
   ctx.fillText(AUDIO_STYLE.label, labelX, labelY);
   ctx.textAlign = 'left';
   ctx.restore();
-}
-
-function hexToRgba(hex, alpha) {
-  const clean = hex.replace('#', '');
-  const bigint = parseInt(clean, 16);
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function btnGuarded(handler) {
