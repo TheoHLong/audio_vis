@@ -167,16 +167,9 @@ button:hover {
   margin-right: 0.5rem;
 }
 
-.legend-dot.semantic {
-  background: linear-gradient(135deg, #60a5fa, #fcd34d);
-}
 
-.legend-dot.energy {
-  background: linear-gradient(135deg, #74c0fc, #ff6347);
-}
-
-.legend-dot.rhythm {
-  background: rgba(125, 211, 252, 0.8);
+.legend-dot.heatmap {
+  background: linear-gradient(135deg, #0f172a, #2563eb 40%, #0ea5e9 70%, #fef3c7);
 }
 
 .legend-dot.audio {
