@@ -13,11 +13,11 @@ const HISTORY_SECONDS = 15;
 
 const LAYER_ORDER = ['L10', 'L6', 'L2'];
 const LAYER_CONFIG = {
-  L10: { color: '#a855f7', offset: 250, label: 'Layer 10 · semantics' },
-  L6: { color: '#f97316', offset: 160, label: 'Layer 6 · prosody' },
-  L2: { color: '#22d3ee', offset: 70, label: 'Layer 2 · voiceprint' },
+  L10: { color: '#a855f7', offset: 180, label: 'L10 · semantics' },
+  L6: { color: '#f97316', offset: 120, label: 'L6 · prosody' },
+  L2: { color: '#22d3ee', offset: 60, label: 'L2 · voiceprint' },
 };
-const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'Audio waveform' };
+const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'waveform' };
 
 const state = {
   layers: [],
@@ -321,7 +321,7 @@ function computeDomain(layers, audio) {
 }
 
 function drawGrid(width, height, domain) {
-  const margin = 70;
+  const margin = 100;
   const usableWidth = width - margin * 2;
   
   // Draw minimal vertical time markers
@@ -350,7 +350,7 @@ function drawGrid(width, height, domain) {
 }
 
 function drawLayerSurface(width, height, layer, domain, config = {}) {
-  const margin = 70;
+  const margin = 100; // Increased margin for labels
   const usableWidth = width - margin * 2;
   const stats = domain.stats[layer.name];
   if (!stats) {
@@ -362,7 +362,7 @@ function drawLayerSurface(width, height, layer, domain, config = {}) {
   const neuronCount = stats.neuronCount;
   
   // Create ridge plot with filled areas
-  const ridgeCount = 4; // Draw 4 main ridges per layer for elegant visualization
+  const ridgeCount = 6; // Draw 6 ridges per layer for better detail
   const ridgeStep = Math.max(1, Math.floor(neuronCount / ridgeCount));
   
   // Process each ridge from back to front for proper layering
@@ -370,8 +370,8 @@ function drawLayerSurface(width, height, layer, domain, config = {}) {
     const neuron = ridgeIdx * ridgeStep;
     if (neuron >= neuronCount) continue;
     
-    const depthOffset = (ridgeIdx / (ridgeCount - 1)) * 45; // 3D depth effect
-    const opacity = 0.25 + (ridgeIdx / (ridgeCount - 1)) * 0.5; // Opacity range for depth
+    const depthOffset = (ridgeIdx / (ridgeCount - 1)) * 35; // 3D depth effect
+    const opacity = 0.3 + (ridgeIdx / (ridgeCount - 1)) * 0.4; // Higher base opacity for better visibility
     
     // Smooth the data with moving average
     const smoothedData = [];
@@ -415,34 +415,49 @@ function drawLayerSurface(width, height, layer, domain, config = {}) {
     ctx.lineTo(margin + usableWidth, ridgeBaseline);
     ctx.closePath();
     
-    // Fill with gradient - lighter at peaks, darker at base
+    // Fill with gradient - much brighter at peaks for clear elevation visibility
     const gradient = ctx.createLinearGradient(0, ridgeBaseline - amplitude, 0, ridgeBaseline + 10);
-    gradient.addColorStop(0, hexToRgba(config.color, Math.min(1, opacity * 1.3))); // Brighter peaks
-    gradient.addColorStop(0.4, hexToRgba(config.color, opacity * 0.8));
-    gradient.addColorStop(0.8, hexToRgba(config.color, opacity * 0.3));
+    gradient.addColorStop(0, hexToRgba(config.color, Math.min(1, opacity * 1.8))); // Much brighter peaks
+    gradient.addColorStop(0.3, hexToRgba(config.color, opacity * 1.2));
+    gradient.addColorStop(0.6, hexToRgba(config.color, opacity * 0.5));
     gradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // Fade to transparent at base
     ctx.fillStyle = gradient;
     ctx.fill();
     
-    // Add subtle ridge outline for definition
-    ctx.strokeStyle = hexToRgba(config.color, opacity * 0.6);
+    // Add ridge outline with stronger definition
+    ctx.strokeStyle = hexToRgba(config.color, Math.min(1, opacity * 0.9));
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Add subtle shadow below ridge for depth
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
     ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin, ridgeBaseline + 1);
+    ctx.lineTo(margin + usableWidth, ridgeBaseline + 1);
     ctx.stroke();
   }
 
-  // Draw label
-  ctx.fillStyle = 'rgba(200, 210, 230, 0.7)';
-  ctx.font = '11px "Inter", system-ui';
+  // Draw label - position to be fully visible
+  ctx.save();
+  ctx.fillStyle = 'rgba(220, 230, 245, 0.9)';
+  ctx.font = '12px "Inter", system-ui';
   ctx.textAlign = 'right';
-  ctx.fillText(config.label || layer.name, margin - 15, baseline + 5);
+  const labelX = margin - 8;
+  const labelY = baseline - 20; // Position above the baseline
+  // Add subtle text shadow for better readability
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 2;
+  ctx.fillText(config.label || layer.name, labelX, labelY);
   ctx.textAlign = 'left';
+  ctx.restore();
 }
 
 function drawAudioSurface(width, height, domain) {
-  const margin = 70;
+  const margin = 100;
   const usableWidth = width - margin * 2;
   const baseline = height - margin + AUDIO_STYLE.offset;
-  const amplitude = 20; // Subtle audio waveform
+  const amplitude = 40; // Increased for better visibility
 
   // Draw audio as a simple filled waveform
   ctx.beginPath();
@@ -467,24 +482,32 @@ function drawAudioSurface(width, height, domain) {
   ctx.lineTo(margin + usableWidth, baseline);
   ctx.closePath();
   
-  // Fill with subtle gradient
+  // Fill with stronger gradient for better visibility
   const gradient = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline);
-  gradient.addColorStop(0, hexToRgba(AUDIO_STYLE.color, 0.4));
-  gradient.addColorStop(1, hexToRgba(AUDIO_STYLE.color, 0.02));
+  gradient.addColorStop(0, hexToRgba(AUDIO_STYLE.color, 0.6));
+  gradient.addColorStop(0.5, hexToRgba(AUDIO_STYLE.color, 0.3));
+  gradient.addColorStop(1, hexToRgba(AUDIO_STYLE.color, 0.05));
   ctx.fillStyle = gradient;
   ctx.fill();
   
-  // Add subtle outline
-  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.3);
-  ctx.lineWidth = 0.5;
+  // Add stronger outline
+  ctx.strokeStyle = hexToRgba(AUDIO_STYLE.color, 0.5);
+  ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Draw label
-  ctx.fillStyle = 'rgba(200, 210, 230, 0.7)';
-  ctx.font = '11px "Inter", system-ui';
+  // Draw label - position to be fully visible
+  ctx.save();
+  ctx.fillStyle = 'rgba(220, 230, 245, 0.9)';
+  ctx.font = '12px "Inter", system-ui';
   ctx.textAlign = 'right';
-  ctx.fillText(AUDIO_STYLE.label, margin - 15, baseline + 5);
+  const labelX = margin - 8;
+  const labelY = baseline - 5; // Position just above the baseline
+  // Add subtle text shadow for better readability
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 2;
+  ctx.fillText(AUDIO_STYLE.label, labelX, labelY);
   ctx.textAlign = 'left';
+  ctx.restore();
 }
 
 function hexToRgba(hex, alpha) {
