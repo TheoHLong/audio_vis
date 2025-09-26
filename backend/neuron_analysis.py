@@ -192,18 +192,35 @@ class NeuronAnalyzer:
         
         # Compute PCA on the reordered activations
         reordered_activations = activations[:, sorted_indices]
-        
-        if n_neurons >= self.n_components:
-            pca = PCA(n_components=self.n_components)
-            pc_timeseries = pca.fit_transform(reordered_activations)
-            explained_variance = pca.explained_variance_ratio_
+
+        # Ensure we never ask PCA for more components than available samples/neurons.
+        n_time_steps, n_reordered_neurons = reordered_activations.shape
+        effective_components = min(self.n_components, n_time_steps, n_reordered_neurons)
+
+        if effective_components > 0:
+            if effective_components >= self.n_components:
+                pca = PCA(n_components=self.n_components)
+                pc_timeseries = pca.fit_transform(reordered_activations)
+                explained_variance = pca.explained_variance_ratio_
+            else:
+                pca = PCA(n_components=effective_components)
+                pc_reduced = pca.fit_transform(reordered_activations)
+                explained_variance = pca.explained_variance_ratio_
+
+                # Pad PCA outputs so downstream code always receives `self.n_components` tracks.
+                pc_timeseries = np.pad(
+                    pc_reduced,
+                    ((0, 0), (0, self.n_components - effective_components)),
+                    mode="constant",
+                )
+                explained_variance = np.pad(
+                    explained_variance,
+                    (0, self.n_components - effective_components),
+                    mode="constant",
+                )
         else:
-            pc_timeseries = reordered_activations[:, :self.n_components]
-            if pc_timeseries.shape[1] < self.n_components:
-                # Pad with zeros if needed
-                padding = np.zeros((pc_timeseries.shape[0], self.n_components - pc_timeseries.shape[1]))
-                pc_timeseries = np.concatenate([pc_timeseries, padding], axis=1)
-            explained_variance = np.ones(self.n_components) / self.n_components
+            pc_timeseries = np.zeros((n_time_steps, self.n_components))
+            explained_variance = np.zeros(self.n_components)
         
         # Store results
         self.neuron_order[layer_name] = sorted_indices

@@ -1,155 +1,108 @@
-# Speech → Neural Trajectories
+# AudioVis: Speech → Neural Trajectories
 
-A live “speech-to-visuals” experience where microphone input becomes a layered 3D line chart: Layer 10 positions semantic trajectories, Layer 6 controls pulse height, and Layer 2 colours segments by speaker voiceprint. Whisper transcripts remain available for context.
+AudioVis streams microphone audio into a FastAPI backend that runs WavLM, optional Whisper keyword spotting, and lightweight neuron analytics. The frontend renders heatmaps, principal component traces, and audio diagnostics so you can inspect how layers L2, L6, and L10 respond to live speech.
 
----
+## Highlights
 
-## What you get
+- **Real-time pipeline** – 40 ms frames with 20 ms hop, exponential smoothing, and automatic throttling keep latency below ~200 ms.
+- **Layer analytics** – Correlate neurons with pitch/energy/spectral features, cluster by tuning, and expose PCA traces for each layer.
+- **Rich frontend** – Canvas-based heatmaps, time-aligned spectrogram, keyword markers, transcript panel, and diagnostics sidebar.
+- **Extensible tooling** – Scripts to pre-download models, cache features, and train semantic projectors for offline experiments.
 
-- **Neural Trajectory Plot** – Streamed WavLM layers become a 3D-style line chart: X = time, Y = neuron index, Z = activity. L10 positions guide the path, L2 colours segments by speaker voiceprint, and L6 controls pulse amplitude.
-- **Audio backplane** – A teal waveform ridge anchored beneath the neural layers keeps the raw signal in view for timing/context.
-- **Layer separation** – L10 forms the top semantic ridge, L6 draws the prosodic ridge, and L2 renders the voiceprint ridge; all three update frame-by-frame.
-- **Real-time loop (<200 ms)** – 40 ms windows, 20 ms hop, EMA smoothing. Histories are capped (~15 s) so the ridge surfaces flow smoothly without lag.
-- **Live transcript overlay** – Whisper tiny can still stream rolling transcripts for context; interface degrades gracefully without it.
-- **Diagnostics panel** – Readiness indicators for semantic projector, speaker clustering, and Whisper.
-
----
-
-## Repository layout
+## Project Layout
 
 ```
 backend/
-  config.py           # Pipeline configuration
-  main.py             # FastAPI app + websocket
-  pipeline.py         # Streaming WavLM → layer activity payloads
-  projection.py       # Frozen semantic projector / incremental PCA fallback
-  keywords.py         # Whisper keyword probe
-  utils.py            # DSP helpers (RMS, YIN, EMA)
+  config.py              # Runtime configuration helpers
+  keywords.py            # Whisper-backed keyword extraction
+  neuron_analysis.py     # Neuron sorting, PCA, and summary stats
+  pipeline.py            # Core streaming pipeline (WavLM → payloads)
+  projection.py          # Semantic projector + speaker clustering
+  utils.py               # DSP utilities (RMS, YIN pitch, EMA, etc.)
 frontend/
-  index.html          # UI shell
-  main.js             # Neural ridge renderer + audio capture
-  styles.css          # Styling
+  index.html             # UI shell
+  main.js                # Rendering + websocket client
+  styles.css             # Layout and styling
 scripts/
-  download_models.py  # Pre-fetch WavLM + Whisper
-  build_manifest_hf.py # HF dataset fetch + manifest builder
-  extract_features.py  # Cache WavLM features
-  train_semantic_projection.py # Train 2D semantic map
-requirements.txt
-README.md
+  download_models.py     # Grab WavLM, Whisper, and optional emotion models
+  extract_features.py    # Batch WavLM feature extraction
+  build_manifest_hf.py   # Create manifests from Hugging Face datasets
+  train_semantic_projection.py  # Train 2‑D semantic projector
+artifacts/               # Sample feature/projection artifacts (optional)
+start_app.py             # Helper launcher for Whisper init + FastAPI
+requirements.txt         # Python dependencies
 ```
-
----
 
 ## Prerequisites
 
 - Python 3.10+
-- Modern browser
-- Microphone access
+- Node-capable browser with microphone access
+- Sufficient disk space for Hugging Face checkpoints (`~1.5 GB` if using Whisper + WavLM)
 
-> **Models:** install `microsoft/wavlm-base` and `openai/whisper-tiny.en`. The helper script pulls both.
-
----
+> ℹ️ Set `TRANSFORMERS_CACHE` (and optionally `HF_HOME`) to reuse existing model downloads.
 
 ## Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 
-# optional but recommended
+# Optional: warm the Hugging Face caches
 python scripts/download_models.py
 ```
 
-If you already cached models elsewhere, set `TRANSFORMERS_CACHE` before launching the server.
+If you have a trained semantic projector, point the pipeline at it before launch:
 
-> **Semantic plane:** after training with `scripts/train_semantic_projection.py`, supply the artefact path:
->
-> ```bash
-> export SEMANTIC_PROJECTION_PATH=artifacts/projections/semantic_librispeech.npz
-> ```
->
-> (Or set `PipelineConfig.semantic_projector_path`.)
+```bash
+export SEMANTIC_PROJECTION_PATH=artifacts/projections/semantic_librispeech.npz
+```
 
----
+## Running the App
 
-## Running the demo
+### 1. Start the backend
 
 ```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+# or
+python start_app.py  # pre-inits Whisper then runs uvicorn
 ```
 
-Visit [http://localhost:8000](http://localhost:8000) and grant microphone access.
+### 2. Open the frontend
+
+Visit [http://localhost:8000](http://localhost:8000) and grant microphone access. The websocket stream sends batched layer activity along with diagnostics and optional transcripts.
 
 ### Controls
 
-- **Start Listening** toggles the mic stream.
-- **Performance Mode** adjusts visual gain.
-- **Show/Hide Grid** toggles auxiliary guide/grid lines in the 3D projection.
-- **Reset** clears the buffered trajectories for a fresh window.
+- **Start Listening** – Toggle microphone capture.
+- **Performance Mode** – Switch between analysis/performance rendering modes.
+- **Hide Grid** – Toggle the 3‑D grid overlay in the projection.
+- **Reset** – Clear rolling buffers (audio, layers, clustering, keywords).
 
-### Visual encodings
+## Offline Workflows
 
-| Channel          | Source (WavLM)                 | Visual cue                       |
-|------------------|-------------------------------|----------------------------------|
-| Semantic map     | L10 → frozen projector        | Star position / clustering       |
-| Speaker identity | L2 voiceprint clustering      | Star colour                      |
-| Prosody energy   | L6 norm & variation           | Star pulsing & nebula intensity  |
-| Loudness         | RMS (frame energy)            | Ridge amplitude baseline         |
-| Audio waveform   | RMS (raw waveform)            | Bottom ridge waveform            |
-| Transcript       | Whisper tiny                  | Rolling text panel               |
+The repository includes scripts to reproduce the semantic projector workflow:
 
-Diagnostics show when the semantic plane, speaker clustering, or Whisper probe are warming up (≈6 s).
+1. **Create dataset manifest** – `python scripts/build_manifest_hf.py ...`
+2. **Extract features** – `python scripts/extract_features.py --manifest ...`
+3. **Train projector** – `python scripts/train_semantic_projection.py --index ...`
 
----
+See `ENHANCEMENTS_SUMMARY.md` for detailed walkthroughs of the visualization improvements.
 
-## Offline training workflow
+## Testing & Diagnostics
 
-1. **Build manifest** (e.g. Librispeech subset):
-   ```bash
-   python scripts/build_manifest_hf.py \
-     --dataset librispeech_asr \
-     --config clean \
-     --split train.100 \
-     --limit 1000 \
-     --audio-column audio \
-     --transcript-column text \
-     --output-audio-dir data/librispeech/audio \
-     --output-manifest data/librispeech/manifest.csv
-   ```
-2. **Extract features**:
-   ```bash
-   python scripts/extract_features.py \
-     --manifest data/librispeech/manifest.csv \
-     --base-dir data/librispeech \
-     --output-dir artifacts/features/librispeech
-   ```
-3. **Train semantic plane**:
-   ```bash
-   python scripts/train_semantic_projection.py \
-     --index artifacts/features/librispeech/features_index.json \
-     --output artifacts/projections/semantic_librispeech.npz
-   ```
+- Quick sanity check: `python -m compileall backend` to ensure sources import cleanly.
+- Analytic smoke test: `python test_enhancements.py` (requires WavLM + Whisper checkpoints and a functional numpy/pytorch stack).
+- Whisper-only probe: `python test_whisper.py` to validate your ASR environment.
 
-Drop the artefact into `SEMANTIC_PROJECTION_PATH` and restart the server.
+If you customise the pipeline, regenerate the frontend bundle or rebuild any cached semantic assets as needed.
 
----
+## Troubleshooting
 
-## Implementation notes
+- **Model downloads blocked** – Use `scripts/download_models.py --skip-*` flags to avoid optional checkpoints, or run on a machine with cached Hugging Face models.
+- **High latency** – Lower `PipelineConfig.activity_history_seconds` or reduce `activity_neurons` to shrink payloads.
+- **Missing transcripts** – The UI falls back to keyword markers if Whisper fails; check backend logs for Whisper/transformers errors.
+- **Semantic projector unavailable** – The pipeline gracefully degrades, but diagnostics will show `projector_ready = false` until an artifact path is supplied.
 
-- **Layer separation** – L10 ridge tracks semantics, L6 ridge shows prosodic energy, and L2 ridge highlights voiceprint changes. All three are updated frame-by-frame from WavLM.
-- **Optional projector** – You can still supply a frozen L10 projector to stabilise neuron selection; the pipeline falls back gracefully if none is provided.
-- **Streaming efficiency** – Layer histories are capped (≈15 s) and payloads stay small; updates go out roughly 6 Hz for smooth animation.
-- **Three.js surfaces** – A WebGL scene renders translucent ridges with orbit controls and an optional guide grid overlay.
-- **Keyword resilience** – If Whisper weights are missing, the UI shows placeholders but continues plotting trajectories.
-
----
-
-## Verification
-
-```bash
-python -m compileall backend
-python -m compileall frontend/main.js
-```
-
-Run end-to-end once models are cached to validate audio flow.
+Happy visualising!
