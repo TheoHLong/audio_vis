@@ -642,7 +642,10 @@ function handleMessage(data) {
 
 // WebSocket connection
 function connectWebSocket() {
-  ws = new WebSocket('ws://localhost:8000/ws/audio');
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const host = window.location.host || 'localhost:8000';
+  const url = `${protocol}://${host}/ws/audio`;
+  ws = new WebSocket(url);
   
   ws.onopen = () => {
     console.log('WebSocket connected');
