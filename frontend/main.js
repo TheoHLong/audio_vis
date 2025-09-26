@@ -13,9 +13,9 @@ const HISTORY_SECONDS = 15;
 
 const LAYER_ORDER = ['L10', 'L6', 'L2'];
 const LAYER_CONFIG = {
-  L10: { label: 'L10 · neural activations (jet)' },
-  L6: { label: 'L6 · neural activations (jet)' },
-  L2: { label: 'L2 · neural activations (jet)' },
+  L10: { label: 'L10 · Semantic Processing (high-level meaning)' },
+  L6: { label: 'L6 · Prosodic Features (rhythm, emotion)' },
+  L2: { label: 'L2 · Acoustic Features (low-level sounds)' },
 };
 const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'spectrogram' };
 
@@ -24,32 +24,39 @@ const FFT_SIZE = 512;
 const FREQ_BINS = FFT_SIZE / 2; // 256 frequency bins
 const MAX_FREQ = TARGET_SAMPLE_RATE / 2; // Nyquist frequency (8kHz)
 
-// Jet colormap for heatmaps
-const JET_GRADIENT = [
-  { stop: 0.0, color: [0, 0, 143] },      // Dark blue
-  { stop: 0.125, color: [0, 0, 255] },    // Blue
-  { stop: 0.25, color: [0, 127, 255] },   // Light blue
-  { stop: 0.375, color: [0, 255, 255] },  // Cyan
-  { stop: 0.5, color: [127, 255, 127] },  // Light green
-  { stop: 0.625, color: [255, 255, 0] },  // Yellow
-  { stop: 0.75, color: [255, 127, 0] },   // Orange
-  { stop: 0.875, color: [255, 0, 0] },    // Red
-  { stop: 1.0, color: [127, 0, 0] },      // Dark red
+// Viridis colormap for better perceptual uniformity
+const VIRIDIS_GRADIENT = [
+  { stop: 0.0, color: [68, 1, 84] },       // Dark purple
+  { stop: 0.125, color: [71, 44, 122] },   // Purple  
+  { stop: 0.25, color: [59, 81, 139] },    // Blue-purple
+  { stop: 0.375, color: [44, 113, 142] },  // Blue-green
+  { stop: 0.5, color: [33, 144, 141] },    // Teal
+  { stop: 0.625, color: [39, 173, 129] },  // Green
+  { stop: 0.75, color: [92, 200, 99] },    // Light green
+  { stop: 0.875, color: [170, 220, 50] },  // Yellow-green
+  { stop: 1.0, color: [253, 231, 37] },    // Bright yellow
 ];
 
-const RAINBOW_GRADIENT = [
-  { stop: 0.0, color: [0, 0, 131] },
-  { stop: 0.125, color: [0, 60, 170] },
-  { stop: 0.375, color: [5, 255, 255] },
-  { stop: 0.625, color: [255, 255, 0] },
-  { stop: 0.875, color: [250, 0, 0] },
-  { stop: 1.0, color: [128, 0, 0] },
+// Magma colormap as alternative
+const MAGMA_GRADIENT = [
+  { stop: 0.0, color: [0, 0, 4] },         // Black
+  { stop: 0.125, color: [28, 16, 68] },    // Dark purple
+  { stop: 0.25, color: [79, 18, 123] },    // Purple
+  { stop: 0.375, color: [129, 37, 129] },  // Magenta
+  { stop: 0.5, color: [181, 54, 122] },    // Pink
+  { stop: 0.625, color: [229, 80, 100] },  // Coral
+  { stop: 0.75, color: [251, 135, 97] },   // Orange
+  { stop: 0.875, color: [254, 194, 135] }, // Light orange
+  { stop: 1.0, color: [252, 253, 191] },   // Pale yellow
 ];
 
-const HEATMAP_LEFT_MARGIN = 100;
-const HEATMAP_TOP_MARGIN = 110;
-const HEATMAP_BOTTOM_MARGIN = 150;
-const HEATMAP_MIN_BAND_HEIGHT = 120;
+const HEATMAP_LEFT_MARGIN = 120;
+const HEATMAP_TOP_MARGIN = 150;
+const HEATMAP_BOTTOM_MARGIN = 50;
+const HEATMAP_MIN_BAND_HEIGHT = 100;
+const PC_TRACK_HEIGHT = 40;
+const STATS_TRACK_HEIGHT = 30;
+const TIMELINE_HEIGHT = 40;
 
 // FFT implementation for spectrogram computation
 function fft(real, imag) {
@@ -87,779 +94,685 @@ function fft(real, imag) {
         real[i + j + halfSize] = u_real - v_real;
         imag[i + j + halfSize] = u_imag - v_imag;
         
-        const temp_wr = wr * w_real - wi * w_imag;
+        const wr_new = wr * w_real - wi * w_imag;
         wi = wr * w_imag + wi * w_real;
-        wr = temp_wr;
+        wr = wr_new;
       }
     }
   }
 }
 
-function computeSpectrogram(audioBuffer) {
-  const n = Math.min(audioBuffer.length, FFT_SIZE);
-  const real = new Float64Array(FFT_SIZE);
-  const imag = new Float64Array(FFT_SIZE);
+// Color interpolation for gradient maps
+function interpolateColor(gradient, value) {
+  value = Math.max(0, Math.min(1, value));
   
-  // Apply Hamming window and copy audio data
-  for (let i = 0; i < n; i++) {
-    const window = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (n - 1));
-    real[i] = audioBuffer[i] * window;
-    imag[i] = 0;
+  let lowerBound = gradient[0];
+  let upperBound = gradient[gradient.length - 1];
+  
+  for (let i = 0; i < gradient.length - 1; i++) {
+    if (value >= gradient[i].stop && value <= gradient[i + 1].stop) {
+      lowerBound = gradient[i];
+      upperBound = gradient[i + 1];
+      break;
+    }
   }
   
-  // Zero-pad if necessary
-  for (let i = n; i < FFT_SIZE; i++) {
-    real[i] = 0;
-    imag[i] = 0;
-  }
+  const range = upperBound.stop - lowerBound.stop;
+  const t = range > 0 ? (value - lowerBound.stop) / range : 0;
   
-  fft(real, imag);
+  const color = [
+    Math.round(lowerBound.color[0] + (upperBound.color[0] - lowerBound.color[0]) * t),
+    Math.round(lowerBound.color[1] + (upperBound.color[1] - lowerBound.color[1]) * t),
+    Math.round(lowerBound.color[2] + (upperBound.color[2] - lowerBound.color[2]) * t),
+  ];
   
-  // Compute magnitude spectrum with logarithmic scaling (dB)
-  const spectrum = new Float32Array(FREQ_BINS);
-  for (let i = 0; i < FREQ_BINS; i++) {
-    const magnitude = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
-    // Convert to dB with floor to prevent -Infinity
-    const magnitudeDB = 20 * Math.log10(Math.max(magnitude, 1e-10));
-    spectrum[i] = magnitudeDB;
-  }
-  
-  return spectrum;
+  return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
 }
 
-const state = {
-  layers: [],
-  audio: { times: [], spectrograms: [] }, // Changed from rms to spectrograms
-  speakerColors: {},
-  diagnostics: {},
-  transcript: '',
-  mode: 'analysis',
-  showGrid: true,
-};
-
+// WebSocket and data management
+let layerHistory = {};
+let audioHistory = { times: [], rms: [], raw_audio: [] };
+let keywords = [];
+let currentTranscript = '';
+let speakerColors = {};
+let neuronAnalysisData = {};  // Store neuron sorting and PC data
 let ws = null;
+let isRecording = false;
 let audioContext = null;
-let mediaStream = null;
-let sourceNode = null;
-let processorNode = null;
-let listening = false;
+let processor = null;
+let source = null;
+let showProjection = true;
 
-function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+// Z-score normalization per neuron
+function zScoreNormalize(vectors) {
+  if (!vectors || vectors.length === 0) return vectors;
+  
+  const n_time = vectors.length;
+  const n_neurons = vectors[0].length;
+  const normalized = [];
+  
+  for (let t = 0; t < n_time; t++) {
+    normalized.push(new Array(n_neurons));
+  }
+  
+  // Calculate mean and std per neuron
+  for (let n = 0; n < n_neurons; n++) {
+    let sum = 0;
+    let sumSq = 0;
+    
+    for (let t = 0; t < n_time; t++) {
+      const val = vectors[t][n];
+      sum += val;
+      sumSq += val * val;
+    }
+    
+    const mean = sum / n_time;
+    const variance = (sumSq / n_time) - (mean * mean);
+    const std = Math.sqrt(Math.max(0, variance)) || 1;
+    
+    // Normalize
+    for (let t = 0; t < n_time; t++) {
+      normalized[t][n] = (vectors[t][n] - mean) / std;
+    }
+  }
+  
+  return normalized;
+}
+
+// Apply neuron sorting to vectors
+function applySorting(vectors, sortedIndices) {
+  if (!sortedIndices || sortedIndices.length === 0) return vectors;
+  
+  return vectors.map(vec => {
+    const sorted = new Array(vec.length);
+    for (let i = 0; i < sortedIndices.length && i < vec.length; i++) {
+      sorted[i] = vec[sortedIndices[i]];
+    }
+    return sorted;
+  });
+}
+
+// Draw timeline with landmarks
+function drawTimeline(ctx, x, y, width, height, times, keywords) {
+  ctx.save();
+  
+  // Background
+  ctx.fillStyle = 'rgba(30, 30, 30, 0.5)';
+  ctx.fillRect(x, y, width, height);
+  
+  // Draw time axis
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, y + height);
+  ctx.lineTo(x + width, y + height);
+  ctx.stroke();
+  
+  // Draw time ticks and labels
+  if (times && times.length > 0) {
+    const maxTime = times[times.length - 1];
+    const tickInterval = 1; // 1 second intervals
+    
+    ctx.font = '10px monospace';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    
+    for (let t = 0; t <= maxTime; t += tickInterval) {
+      const xPos = x + (t / maxTime) * width;
+      
+      // Draw tick
+      ctx.beginPath();
+      ctx.moveTo(xPos, y + height - 5);
+      ctx.lineTo(xPos, y + height);
+      ctx.stroke();
+      
+      // Draw label
+      ctx.fillText(`${t}s`, xPos - 10, y + height - 8);
+    }
+  }
+  
+  // Draw keywords as markers
+  if (keywords && keywords.length > 0 && times && times.length > 0) {
+    const maxTime = times[times.length - 1];
+    
+    keywords.forEach(kw => {
+      const xPos = x + ((kw.t - times[0]) / maxTime) * width;
+      
+      // Draw marker
+      ctx.fillStyle = `rgba(255, 200, 50, ${kw.confidence})`;
+      ctx.fillRect(xPos - 1, y, 2, height - 10);
+      
+      // Draw text
+      ctx.save();
+      ctx.font = '11px sans-serif';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.translate(xPos, y + 15);
+      ctx.rotate(-Math.PI / 6);
+      ctx.fillText(kw.text, 0, 0);
+      ctx.restore();
+    });
+  }
+  
+  ctx.restore();
+}
+
+// Draw PC summary tracks
+function drawPCTracks(ctx, x, y, width, height, pcData, times, label) {
+  if (!pcData || !pcData.pc_timeseries || pcData.pc_timeseries.length === 0) return;
+  
+  ctx.save();
+  
+  // Background
+  ctx.fillStyle = 'rgba(40, 40, 40, 0.3)';
+  ctx.fillRect(x, y, width, height);
+  
+  // Draw label
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+  ctx.fillText(`${label} PCs`, x + 5, y + 12);
+  
+  const pcColors = ['#ff6b6b', '#4ecdc4', '#45b7d1'];
+  const n_pcs = Math.min(3, pcData.pc_timeseries[0].length);
+  const pcHeight = (height - 15) / n_pcs;
+  
+  // Draw each PC
+  for (let pc = 0; pc < n_pcs; pc++) {
+    const yOffset = y + 15 + pc * pcHeight + pcHeight / 2;
+    
+    ctx.strokeStyle = pcColors[pc];
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.8;
+    
+    ctx.beginPath();
+    for (let t = 0; t < pcData.pc_timeseries.length; t++) {
+      const xPos = x + (t / pcData.pc_timeseries.length) * width;
+      const value = pcData.pc_timeseries[t][pc];
+      const yPos = yOffset - (value * pcHeight * 0.4); // Scale to fit
+      
+      if (t === 0) {
+        ctx.moveTo(xPos, yPos);
+      } else {
+        ctx.lineTo(xPos, yPos);
+      }
+    }
+    ctx.stroke();
+    
+    // Draw variance label
+    if (pcData.explained_variance && pcData.explained_variance[pc]) {
+      const variance = (pcData.explained_variance[pc] * 100).toFixed(1);
+      ctx.font = '9px monospace';
+      ctx.fillStyle = pcColors[pc];
+      ctx.fillText(`PC${pc+1}: ${variance}%`, x + width - 60, yOffset);
+    }
+  }
+  
+  ctx.restore();
+}
+
+// Draw layer statistics track
+function drawStatsTrack(ctx, x, y, width, height, stats, label) {
+  if (!stats) return;
+  
+  ctx.save();
+  
+  // Background
+  ctx.fillStyle = 'rgba(30, 30, 30, 0.2)';
+  ctx.fillRect(x, y, width, height);
+  
+  // Draw sparsity
+  if (stats.sparsity) {
+    ctx.strokeStyle = 'rgba(255, 150, 50, 0.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    
+    for (let t = 0; t < stats.sparsity.length; t++) {
+      const xPos = x + (t / stats.sparsity.length) * width;
+      const yPos = y + height - (stats.sparsity[t] * height);
+      
+      if (t === 0) {
+        ctx.moveTo(xPos, yPos);
+      } else {
+        ctx.lineTo(xPos, yPos);
+      }
+    }
+    ctx.stroke();
+  }
+  
+  // Draw change rate
+  if (stats.change_rate) {
+    ctx.strokeStyle = 'rgba(100, 200, 255, 0.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    
+    // Normalize change rate
+    const maxChange = Math.max(...stats.change_rate);
+    
+    for (let t = 0; t < stats.change_rate.length; t++) {
+      const xPos = x + (t / stats.change_rate.length) * width;
+      const yPos = y + height - ((stats.change_rate[t] / maxChange) * height);
+      
+      if (t === 0) {
+        ctx.moveTo(xPos, yPos);
+      } else {
+        ctx.lineTo(xPos, yPos);
+      }
+    }
+    ctx.stroke();
+  }
+  
+  ctx.restore();
+}
+
+// Enhanced heatmap drawing with sorted neurons
+function drawHeatmap(ctx, x, y, width, height, layer) {
+  const { vectors, times } = layer;
+  if (!vectors || vectors.length === 0) return;
+  
+  // Get neuron analysis data if available
+  const analysis = layer.neuron_analysis;
+  let processedVectors = vectors;
+  
+  // Apply neuron sorting if available
+  if (analysis && analysis.sorted_indices) {
+    processedVectors = applySorting(vectors, analysis.sorted_indices);
+  }
+  
+  // Apply z-score normalization
+  processedVectors = zScoreNormalize(processedVectors);
+  
+  const n_neurons = processedVectors[0].length;
+  const n_time = processedVectors.length;
+  const neuronHeight = height / n_neurons;
+  const timeWidth = width / n_time;
+  
+  // Draw heatmap
+  for (let t = 0; t < n_time; t++) {
+    for (let n = 0; n < n_neurons; n++) {
+      const value = processedVectors[t][n];
+      // Map z-score to [0, 1] using tanh for better contrast
+      const normalizedValue = (Math.tanh(value / 2) + 1) / 2;
+      
+      ctx.fillStyle = interpolateColor(VIRIDIS_GRADIENT, normalizedValue);
+      ctx.fillRect(
+        x + t * timeWidth,
+        y + n * neuronHeight,
+        Math.ceil(timeWidth) + 1,
+        Math.ceil(neuronHeight) + 1
+      );
+    }
+  }
+  
+  // Draw neuron grouping indicators if we have clustering info
+  if (analysis && analysis.sorted_indices) {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 1;
+    
+    // Draw subtle dividers between neuron groups (every 10 neurons for now)
+    for (let n = 10; n < n_neurons; n += 10) {
+      ctx.beginPath();
+      ctx.moveTo(x, y + n * neuronHeight);
+      ctx.lineTo(x + width, y + n * neuronHeight);
+      ctx.stroke();
+    }
   }
 }
 
-window.addEventListener('resize', () => {
-  resizeCanvas();
-  renderScene();
-});
-resizeCanvas();
-
-async function ensureSocket() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    return;
+// Main drawing function
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Background
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  const heatmapWidth = canvas.width - HEATMAP_LEFT_MARGIN - 50;
+  
+  // Draw title and status
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Neural Audio Visualization', 20, 30);
+  
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = '#888888';
+  ctx.fillText(`Mode: ${showProjection ? 'Analysis' : 'Performance'}`, 20, 50);
+  
+  // Draw transcript
+  if (currentTranscript) {
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#cccccc';
+    const lines = wrapText(ctx, currentTranscript, canvas.width - 40);
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 20, 80 + i * 18);
+    });
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws/audio`;
-  ws = new WebSocket(wsUrl);
-  ws.binaryType = 'arraybuffer';
+  
+  // Calculate layout positions
+  let currentY = HEATMAP_TOP_MARGIN;
+  
+  // Draw timeline at top
+  if (audioHistory.times && audioHistory.times.length > 0) {
+    drawTimeline(ctx, HEATMAP_LEFT_MARGIN, currentY, heatmapWidth, TIMELINE_HEIGHT, 
+                 audioHistory.times, keywords);
+    currentY += TIMELINE_HEIGHT + 10;
+  }
+  
+  // Draw spectrogram
+  const spectrogramHeight = 80;
+  drawSpectrogram(ctx, HEATMAP_LEFT_MARGIN, currentY, heatmapWidth, spectrogramHeight);
+  
+  // Draw spectrogram label
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = AUDIO_STYLE.color;
+  ctx.fillText(AUDIO_STYLE.label, 10, currentY + spectrogramHeight / 2);
+  
+  currentY += spectrogramHeight + 20;
+  
+  // Calculate space for each layer
+  const remainingHeight = canvas.height - currentY - HEATMAP_BOTTOM_MARGIN;
+  const layerTotalHeight = remainingHeight / LAYER_ORDER.length;
+  
+  // Draw each layer with its components
+  LAYER_ORDER.forEach((layerName, idx) => {
+    const layer = layerHistory[layerName];
+    if (!layer || !layer.vectors || layer.vectors.length === 0) return;
+    
+    const layerY = currentY + idx * layerTotalHeight;
+    const heatmapHeight = Math.min(HEATMAP_MIN_BAND_HEIGHT, layerTotalHeight - PC_TRACK_HEIGHT - STATS_TRACK_HEIGHT - 20);
+    
+    // Draw layer label
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(LAYER_CONFIG[layerName].label, 10, layerY + heatmapHeight / 2);
+    
+    // Draw heatmap
+    drawHeatmap(ctx, HEATMAP_LEFT_MARGIN, layerY, heatmapWidth, heatmapHeight, layer);
+    
+    // Draw PC tracks if available
+    if (layer.neuron_analysis) {
+      drawPCTracks(ctx, HEATMAP_LEFT_MARGIN, layerY + heatmapHeight + 5, 
+                   heatmapWidth, PC_TRACK_HEIGHT, layer.neuron_analysis, 
+                   layer.times, layerName);
+      
+      // Draw stats track
+      if (layer.neuron_analysis.stats) {
+        drawStatsTrack(ctx, HEATMAP_LEFT_MARGIN, 
+                      layerY + heatmapHeight + PC_TRACK_HEIGHT + 10,
+                      heatmapWidth, STATS_TRACK_HEIGHT, 
+                      layer.neuron_analysis.stats, layerName);
+      }
+    }
+  });
+  
+  requestAnimationFrame(draw);
+}
 
+// Spectrogram drawing function
+function drawSpectrogram(ctx, x, y, width, height) {
+  if (!audioHistory.raw_audio || audioHistory.raw_audio.length === 0) return;
+  
+  // Background
+  ctx.fillStyle = 'rgba(20, 20, 30, 0.5)';
+  ctx.fillRect(x, y, width, height);
+  
+  const spectrogramData = computeSpectrogram(audioHistory.raw_audio);
+  if (!spectrogramData || spectrogramData.length === 0) return;
+  
+  const timeSteps = spectrogramData.length;
+  const freqBins = spectrogramData[0].length;
+  const timeWidth = width / timeSteps;
+  const freqHeight = height / freqBins;
+  
+  // Draw spectrogram
+  for (let t = 0; t < timeSteps; t++) {
+    for (let f = 0; f < freqBins; f++) {
+      const magnitude = spectrogramData[t][f];
+      const normalizedMag = Math.log(1 + magnitude) / 10; // Log scale
+      
+      ctx.fillStyle = interpolateColor(MAGMA_GRADIENT, normalizedMag);
+      ctx.fillRect(
+        x + t * timeWidth,
+        y + height - (f + 1) * freqHeight,
+        Math.ceil(timeWidth) + 1,
+        Math.ceil(freqHeight) + 1
+      );
+    }
+  }
+}
+
+// Compute spectrogram from raw audio
+function computeSpectrogram(audioFrames) {
+  if (!audioFrames || audioFrames.length === 0) return [];
+  
+  const spectrogram = [];
+  const hopSize = FFT_SIZE / 2;
+  
+  for (let i = 0; i < audioFrames.length; i++) {
+    const frame = audioFrames[i];
+    if (!frame || frame.length < FFT_SIZE) continue;
+    
+    // Apply Hanning window
+    const windowed = new Float32Array(FFT_SIZE);
+    for (let j = 0; j < FFT_SIZE; j++) {
+      const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * j / (FFT_SIZE - 1));
+      windowed[j] = frame[j] * window;
+    }
+    
+    // Compute FFT
+    const real = Array.from(windowed);
+    const imag = new Array(FFT_SIZE).fill(0);
+    fft(real, imag);
+    
+    // Calculate magnitude spectrum
+    const magnitudes = [];
+    for (let j = 0; j < FREQ_BINS; j++) {
+      const mag = Math.sqrt(real[j] * real[j] + imag[j] * imag[j]);
+      magnitudes.push(mag);
+    }
+    
+    spectrogram.push(magnitudes);
+  }
+  
+  return spectrogram;
+}
+
+// Text wrapping helper
+function wrapText(ctx, text, maxWidth) {
+  const words = text.split(' ');
+  const lines = [];
+  let currentLine = '';
+  
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    const metrics = ctx.measureText(testLine);
+    
+    if (metrics.width > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+  
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  
+  return lines;
+}
+
+// WebSocket message handling
+function handleMessage(data) {
+  if (data.type === 'layer_activity') {
+    // Update layer history
+    data.layers.forEach(layer => {
+      layerHistory[layer.name] = layer;
+    });
+    
+    // Update audio history
+    if (data.audio) {
+      audioHistory = data.audio;
+    }
+    
+    // Update metadata
+    if (data.meta) {
+      if (data.meta.transcript) {
+        currentTranscript = data.meta.transcript;
+        transcriptText.textContent = currentTranscript;
+      }
+      
+      if (data.meta.keywords) {
+        keywords = data.meta.keywords;
+      }
+      
+      if (data.meta.speaker_colors) {
+        speakerColors = data.meta.speaker_colors;
+      }
+      
+      // Update diagnostics
+      if (data.meta.diagnostics) {
+        const diag = data.meta.diagnostics;
+        diagnosticsList.innerHTML = `
+          <li>Projector: ${diag.projector_ready ? '✓' : '○'}</li>
+          <li>Speaker: ${diag.speaker_ready ? '✓' : '○'}</li>
+          <li>Keywords: ${diag.keyword_ready ? '✓' : '○'}</li>
+        `;
+      }
+    }
+  }
+}
+
+// WebSocket connection
+function connectWebSocket() {
+  ws = new WebSocket('ws://localhost:8000/ws/audio');
+  
   ws.onopen = () => {
     console.log('WebSocket connected');
   };
-  ws.onmessage = (event) => handleMessage(event.data);
-  ws.onerror = (err) => console.error('WebSocket error', err);
+  
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleMessage(data);
+    } catch (e) {
+      console.error('Failed to parse message:', e);
+    }
+  };
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+  };
+  
   ws.onclose = () => {
-    listening = false;
-    updateButtons();
-    setTimeout(() => ensureSocket().catch(() => undefined), 1500);
+    console.log('WebSocket disconnected');
+    if (isRecording) {
+      setTimeout(connectWebSocket, 1000);
+    }
   };
 }
 
-async function startListening() {
+// Audio processing setup
+async function startRecording() {
   try {
-    await ensureSocket();
-    if (!mediaStream) {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: TARGET_SAMPLE_RATE,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
-        video: false,
-      });
-    }
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume();
-    }
-    sourceNode = audioContext.createMediaStreamSource(mediaStream);
-    processorNode = audioContext.createScriptProcessor(2048, 1, 1);
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0;
-    processorNode.onaudioprocess = (event) => {
-      const input = event.inputBuffer.getChannelData(0);
-      const down = downsample(input, audioContext.sampleRate, TARGET_SAMPLE_RATE);
-      if (down && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(down.buffer);
-      }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+    source = audioContext.createMediaStreamSource(stream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+    
+    processor.onaudioprocess = (e) => {
+      if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+      
+      const inputData = e.inputBuffer.getChannelData(0);
+      const samples = new Float32Array(inputData);
+      
+      // Send audio data to server
+      ws.send(samples.buffer);
     };
-    sourceNode.connect(processorNode);
-    processorNode.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-    listening = true;
-    updateButtons();
-  } catch (err) {
-    console.error('Failed to start listening', err);
-    alert('Microphone permission or audio initialisation failed. Check console for details.');
+    
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    
+    isRecording = true;
+    startBtn.textContent = 'Stop';
+    startBtn.classList.add('recording');
+    
+    connectWebSocket();
+  } catch (error) {
+    console.error('Failed to start recording:', error);
+    alert('Failed to access microphone');
   }
 }
 
-function stopListening() {
-  listening = false;
-  updateButtons();
-  if (processorNode) {
-    processorNode.disconnect();
-    processorNode.onaudioprocess = null;
-    processorNode = null;
+function stopRecording() {
+  isRecording = false;
+  
+  if (processor) {
+    processor.disconnect();
+    processor = null;
   }
-  if (sourceNode) {
-    sourceNode.disconnect();
-    sourceNode = null;
+  
+  if (source) {
+    source.disconnect();
+    source = null;
   }
+  
   if (audioContext) {
     audioContext.close();
     audioContext = null;
   }
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => track.stop());
-    mediaStream = null;
+  
+  if (ws) {
+    ws.close();
+    ws = null;
   }
+  
+  startBtn.textContent = 'Start';
+  startBtn.classList.remove('recording');
 }
 
-function downsample(buffer, inRate, outRate) {
-  if (!buffer || inRate === outRate) {
-    return Float32Array.from(buffer);
-  }
-  const ratio = inRate / outRate;
-  const newLength = Math.round(buffer.length / ratio);
-  if (!Number.isFinite(newLength) || newLength <= 0) {
-    return null;
-  }
-  const result = new Float32Array(newLength);
-  let offsetResult = 0;
-  let offsetBuffer = 0;
-  while (offsetResult < result.length) {
-    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-    let accum = 0;
-    let count = 0;
-    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i += 1) {
-      accum += buffer[i];
-      count += 1;
-    }
-    result[offsetResult] = count > 0 ? accum / count : 0;
-    offsetResult += 1;
-    offsetBuffer = nextOffsetBuffer;
-  }
-  return result;
-}
-
-function handleMessage(message) {
-  let data;
-  try {
-    data = typeof message === 'string' ? JSON.parse(message) : JSON.parse(new TextDecoder().decode(message));
-  } catch (err) {
-    console.warn('Failed to parse message', err);
-    return;
-  }
-  if (data.type === 'hello') {
-    return;
-  }
-  if (data.type === 'mode') {
-    state.mode = data.mode || state.mode;
-    updateModeUI();
-    return;
-  }
-  if (data.type === 'layer_activity') {
-    const rawLayers = data.layers || [];
-    state.layers = enrichLayers(rawLayers);
-    
-    // Process audio data - compute spectrograms from raw audio if available
-    const audioData = data.audio || { times: [], rms: [], raw_audio: [] };
-    if (audioData.raw_audio && audioData.raw_audio.length > 0) {
-      // Compute spectrograms from raw audio data
-      const spectrograms = [];
-      const times = [];
-      
-      audioData.raw_audio.forEach((audioFrame, index) => {
-        if (Array.isArray(audioFrame) && audioFrame.length > 0) {
-          const spectrum = computeSpectrogram(audioFrame);
-          spectrograms.push(Array.from(spectrum));
-          times.push(audioData.times[index] || index * 0.032); // Default ~32ms frame rate
-        }
-      });
-      
-      state.audio = { times, spectrograms };
-    } else {
-      // Fallback to RMS if raw audio not available
-      state.audio = { times: audioData.times || [], spectrograms: [] };
-    }
-    
-    state.diagnostics = data.meta?.diagnostics || {};
-    state.mode = data.meta?.mode || state.mode;
-    state.transcript = data.meta?.transcript || '';
-    state.speakerColors = data.meta?.speaker_colors || {};
-    updateTranscript();
-    updateDiagnostics();
-    updateModeUI();
-    renderScene();
-    return;
-  }
-}
-
-function updateTranscript() {
-  const trimmed = state.transcript && state.transcript.trim();
-  transcriptText.textContent = trimmed && trimmed.length
-    ? trimmed
-    : 'Enable whisper-tiny to see live transcripts.';
-}
-
-function updateDiagnostics() {
-  diagnosticsList.innerHTML = '';
-  const entries = [
-    { label: 'Semantic plane', value: state.diagnostics.projector_ready },
-    { label: 'Speaker clusters', value: state.diagnostics.speaker_ready },
-    { label: 'Whisper', value: state.diagnostics.keyword_ready },
-  ];
-  entries.forEach((entry) => {
-    const li = document.createElement('li');
-    const ok = Boolean(entry.value);
-    li.innerHTML = `<span style="color:${ok ? 'rgba(125, 211, 252, 0.95)' : 'rgba(251, 191, 36, 0.85)'};font-weight:600">●</span> ${entry.label}: ${ok ? 'online' : 'warming'}`;
-    diagnosticsList.appendChild(li);
-  });
-}
-
-function updateModeUI() {
-  const nextMode = state.mode === 'analysis' ? 'performance' : 'analysis';
-  modeBtn.textContent = `${nextMode.charAt(0).toUpperCase() + nextMode.slice(1)} Mode`;
-  modePill.textContent = `Mode: ${state.mode.charAt(0).toUpperCase() + state.mode.slice(1)}`;
-  gridBtn.textContent = state.showGrid ? 'Hide Grid' : 'Show Grid';
-}
-
-function updateButtons() {
-  startBtn.textContent = listening ? 'Stop Listening' : 'Start Listening';
-  startBtn.classList.toggle('primary', !listening);
-  startBtn.classList.toggle('ghost', listening);
-}
-
-function renderScene() {
-  resizeCanvas();
-  const rect = canvas.getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
-  ctx.clearRect(0, 0, width, height);
-  
-  // Add very subtle background gradient for depth
-  const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
-  bgGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-  bgGradient.addColorStop(1, 'rgba(10, 15, 30, 0.08)');
-  ctx.fillStyle = bgGradient;
-  ctx.fillRect(0, 0, width, height);
-
-  const activeLayers = LAYER_ORDER
-    .map((name) => state.layers.find((layer) => layer.name === name))
-    .filter((layer) => layer && layer.times?.length && layer.vectors?.length);
-  const hasAudio = state.audio?.times?.length && state.audio?.spectrograms?.length;
-
-  if (!activeLayers.length && !hasAudio) {
-    drawPlaceholder(width, height);
-    return;
-  }
-
-  const domain = computeHeatmapDomain(activeLayers, state.audio);
-  if (state.showGrid) {
-    drawGrid(width, height, domain);
-  }
-
-  activeLayers.forEach((layer, index) => {
-    drawLayerHeatmap(width, height, layer, domain, LAYER_CONFIG[layer.name], index, activeLayers.length);
-  });
-
-  if (hasAudio) {
-    drawAudioSpectrogram(width, height, domain);
-  }
-}
-
-function enrichLayers(rawLayers) {
-  if (!Array.isArray(rawLayers)) {
-    return [];
-  }
-  return rawLayers.map((layer) => {
-    const times = Array.isArray(layer?.times) ? layer.times : [];
-    const vectors = Array.isArray(layer?.vectors) ? layer.vectors : [];
-    return {
-      ...layer,
-      times,
-      vectors,
-    };
-  });
-}
-
-function jetColormap(value, alpha = 1) {
-  const t = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
-  for (let i = 0; i < JET_GRADIENT.length - 1; i += 1) {
-    const current = JET_GRADIENT[i];
-    const next = JET_GRADIENT[i + 1];
-    if (t <= next.stop) {
-      const span = next.stop - current.stop || 1;
-      const localT = Math.min(1, Math.max(0, (t - current.stop) / span));
-      const r = Math.round(current.color[0] + (next.color[0] - current.color[0]) * localT);
-      const g = Math.round(current.color[1] + (next.color[1] - current.color[1]) * localT);
-      const b = Math.round(current.color[2] + (next.color[2] - current.color[2]) * localT);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-  }
-  const last = JET_GRADIENT[JET_GRADIENT.length - 1];
-  return `rgba(${last.color[0]}, ${last.color[1]}, ${last.color[2]}, ${alpha})`;
-}
-
-function intensityToColor(value, alpha = 1) {
-  const t = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.5));
-  for (let i = 0; i < RAINBOW_GRADIENT.length - 1; i += 1) {
-    const current = RAINBOW_GRADIENT[i];
-    const next = RAINBOW_GRADIENT[i + 1];
-    if (t <= next.stop) {
-      const span = next.stop - current.stop || 1;
-      const localT = Math.min(1, Math.max(0, (t - current.stop) / span));
-      const r = Math.round(current.color[0] + (next.color[0] - current.color[0]) * localT);
-      const g = Math.round(current.color[1] + (next.color[1] - current.color[1]) * localT);
-      const b = Math.round(current.color[2] + (next.color[2] - current.color[2]) * localT);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-  }
-  const last = RAINBOW_GRADIENT[RAINBOW_GRADIENT.length - 1];
-  return `rgba(${last.color[0]}, ${last.color[1]}, ${last.color[2]}, ${alpha})`;
-}
-
-function drawPlaceholder(width, height) {
-  ctx.fillStyle = 'rgba(148, 197, 255, 0.25)';
-  ctx.font = '14px "Inter", system-ui';
-  ctx.textAlign = 'center';
-  ctx.fillText('Speak to see neural activation heatmaps and audio spectrogram...', width / 2, height / 2);
-  ctx.textAlign = 'left';
-}
-
-function computeHeatmapDomain(layers, audio) {
-  let minTime = Number.POSITIVE_INFINITY;
-  let maxTime = 0;
-  const stats = {};
-  let maxNeurons = 0;
-
-  layers.forEach((layer) => {
-    if (!layer.times?.length || !layer.vectors?.length) {
-      return;
-    }
-
-    minTime = Math.min(minTime, layer.times[0]);
-    maxTime = Math.max(maxTime, layer.times[layer.times.length - 1]);
-
-    const neuronCount = layer.vectors[0]?.length || 0;
-    maxNeurons = Math.max(maxNeurons, neuronCount);
-
-    // Compute activation range across all vectors
-    let minActivation = Number.POSITIVE_INFINITY;
-    let maxActivation = Number.NEGATIVE_INFINITY;
-
-    layer.vectors.forEach(vector => {
-      if (Array.isArray(vector)) {
-        vector.forEach(value => {
-          if (Number.isFinite(value)) {
-            minActivation = Math.min(minActivation, value);
-            maxActivation = Math.max(maxActivation, value);
-          }
-        });
-      }
-    });
-
-    if (!Number.isFinite(minActivation) || !Number.isFinite(maxActivation)) {
-      minActivation = -1;
-      maxActivation = 1;
-    } else if (Math.abs(maxActivation - minActivation) < 1e-6) {
-      const mid = minActivation;
-      minActivation = mid - 0.5;
-      maxActivation = mid + 0.5;
-    }
-
-    stats[layer.name] = {
-      neuronCount,
-      minActivation,
-      maxActivation,
-    };
-  });
-
-  if (audio?.times?.length) {
-    minTime = Math.min(minTime, audio.times[0]);
-    maxTime = Math.max(maxTime, audio.times[audio.times.length - 1]);
-  }
-  if (!Number.isFinite(minTime)) {
-    minTime = 0;
-  }
-  if (maxTime <= minTime) {
-    maxTime = minTime + 1;
-  }
-  return { minTime, maxTime, stats, maxNeurons: Math.max(maxNeurons, 1) };
-}
-
-function drawGrid(width, height, domain) {
-  const margin = 100;
-  const usableWidth = width - margin * 2;
-  
-  // Draw minimal vertical time markers
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.05)';
-  ctx.lineWidth = 0.5;
-  const cols = 5; // Just 5 time markers
-  for (let i = 1; i < cols; i += 1) {
-    const ratio = i / cols;
-    const x = margin + ratio * usableWidth;
-    ctx.beginPath();
-    ctx.moveTo(x, margin);
-    ctx.lineTo(x, height - margin * 0.5);
-    ctx.stroke();
-  }
-  
-  // Draw axis lines
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.1)';
-  ctx.beginPath();
-  // Vertical axis
-  ctx.moveTo(margin, margin);
-  ctx.lineTo(margin, height - margin * 0.5);
-  // Horizontal baseline
-  ctx.moveTo(margin, height - margin * 0.5);
-  ctx.lineTo(margin + usableWidth, height - margin * 0.5);
-  ctx.stroke();
-}
-
-function drawLayerHeatmap(width, height, layer, domain, config = {}, index = 0, totalLayers = 1) {
-  const layerTimes = Array.isArray(layer.times) ? layer.times : [];
-  const layerVectors = Array.isArray(layer.vectors) ? layer.vectors : [];
-  
-  if (!layerTimes.length || !layerVectors.length) {
-    return;
-  }
-
-  const stats = domain.stats[layer.name];
-  if (!stats) {
-    return;
-  }
-
-  const margin = HEATMAP_LEFT_MARGIN;
-  const usableWidth = width - margin * 2;
-  if (usableWidth <= 0) {
-    return;
-  }
-
-  const topMargin = HEATMAP_TOP_MARGIN;
-  const bottomMargin = HEATMAP_BOTTOM_MARGIN;
-  const availableHeight = Math.max(HEATMAP_MIN_BAND_HEIGHT * totalLayers, height - topMargin - bottomMargin);
-  const bandHeight = Math.max(HEATMAP_MIN_BAND_HEIGHT, availableHeight / Math.max(totalLayers, 1));
-  
-  const heatmapTop = topMargin + index * bandHeight;
-  const heatmapHeight = bandHeight * 0.8; // Leave some space between layers
-  
-  const timeRange = Math.max(1e-6, domain.maxTime - domain.minTime);
-  const activationRange = Math.max(1e-6, stats.maxActivation - stats.minActivation);
-  
-  // Create a temporary canvas for the heatmap data
-  const heatmapCanvas = document.createElement('canvas');
-  const heatmapCtx = heatmapCanvas.getContext('2d');
-  
-  const timeSteps = layerTimes.length;
-  const neuronCount = stats.neuronCount;
-  
-  if (timeSteps === 0 || neuronCount === 0) {
-    return;
-  }
-  
-  heatmapCanvas.width = timeSteps;
-  heatmapCanvas.height = neuronCount;
-  
-  const imageData = heatmapCtx.createImageData(timeSteps, neuronCount);
-  const data = imageData.data;
-  
-  // Fill the heatmap data
-  for (let t = 0; t < timeSteps; t++) {
-    const vector = layerVectors[t];
-    if (!Array.isArray(vector)) continue;
-    
-    for (let n = 0; n < neuronCount; n++) {
-      const activation = vector[n] || 0;
-      const normalizedActivation = (activation - stats.minActivation) / activationRange;
-      
-      // Convert to jet colormap
-      const color = jetColormap(normalizedActivation, 1);
-      const rgbaMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-      
-      if (rgbaMatch) {
-        const pixelIndex = (n * timeSteps + t) * 4;
-        data[pixelIndex] = parseInt(rgbaMatch[1]);     // R
-        data[pixelIndex + 1] = parseInt(rgbaMatch[2]); // G
-        data[pixelIndex + 2] = parseInt(rgbaMatch[3]); // B
-        data[pixelIndex + 3] = 255;                    // A
-      }
-    }
-  }
-  
-  heatmapCtx.putImageData(imageData, 0, 0);
-  
-  // Draw the heatmap to the main canvas
-  ctx.save();
-  ctx.imageSmoothingEnabled = false; // Keep pixel-perfect rendering
-  ctx.drawImage(
-    heatmapCanvas,
-    0, 0, timeSteps, neuronCount,
-    margin, heatmapTop, usableWidth, heatmapHeight
-  );
-  
-  // Add border
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.3)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(margin, heatmapTop, usableWidth, heatmapHeight);
-  
-  // Draw label
-  const labelY = heatmapTop + heatmapHeight / 2;
-  ctx.fillStyle = 'rgba(220, 232, 250, 0.92)';
-  ctx.font = '12px "Inter", system-ui';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-  ctx.shadowBlur = 2;
-  ctx.fillText(config.label || layer.name, margin - 18, labelY);
-  
-  // Draw neuron count label
-  ctx.textAlign = 'left';
-  ctx.font = '10px "Inter", system-ui';
-  ctx.fillStyle = 'rgba(148, 197, 255, 0.7)';
-  ctx.fillText(`${neuronCount} neurons`, margin + 5, heatmapTop + 15);
-  
-  ctx.restore();
-}
-
-function createIntensityGradient(points, margin, usableWidth, alpha = 1) {
-  const gradient = ctx.createLinearGradient(margin, 0, margin + usableWidth, 0);
-  const clampAlpha = Math.min(1, Math.max(0, alpha));
-  if (!Array.isArray(points) || !points.length || !Number.isFinite(usableWidth) || usableWidth <= 0) {
-    gradient.addColorStop(0, intensityToColor(0.5, clampAlpha));
-    gradient.addColorStop(1, intensityToColor(0.5, clampAlpha));
-    return gradient;
-  }
-
-  const range = Math.max(1e-6, usableWidth);
-  const seen = new Set();
-
-  points.forEach((point, index) => {
-    if (!point || !Number.isFinite(point.x)) {
-      return;
-    }
-    const ratio = Math.min(1, Math.max(0, (point.x - margin) / range));
-    const key = Math.round(ratio * 1000);
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    gradient.addColorStop(ratio, intensityToColor(point.intensity, clampAlpha));
-  });
-
-  if (!seen.has(0)) {
-    const start = points.find((point) => point && Number.isFinite(point.x));
-    const color = start ? intensityToColor(start.intensity, clampAlpha) : intensityToColor(0.5, clampAlpha);
-    gradient.addColorStop(0, color);
-  }
-  if (!seen.has(1000)) {
-    const end = [...points].reverse().find((point) => point && Number.isFinite(point.x));
-    const color = end ? intensityToColor(end.intensity, clampAlpha) : intensityToColor(0.5, clampAlpha);
-    gradient.addColorStop(1, color);
-  }
-
-  return gradient;
-}
-
-function drawAudioSpectrogram(width, height, domain) {
-  if (!state.audio.spectrograms || state.audio.spectrograms.length === 0) {
-    return;
-  }
-
-  const margin = HEATMAP_LEFT_MARGIN;
-  const usableWidth = width - margin * 2;
-  const spectrogramHeight = 80; // Fixed height for spectrogram
-  const spectrogramTop = height - HEATMAP_BOTTOM_MARGIN + 20;
-  
-  if (usableWidth <= 0 || spectrogramHeight <= 0) {
-    return;
-  }
-
-  const timeSteps = state.audio.times.length;
-  const freqBins = FREQ_BINS;
-  
-  if (timeSteps === 0 || freqBins === 0) {
-    return;
-  }
-
-  // Create temporary canvas for spectrogram data
-  const spectrogramCanvas = document.createElement('canvas');
-  const spectrogramCtx = spectrogramCanvas.getContext('2d');
-  
-  spectrogramCanvas.width = timeSteps;
-  spectrogramCanvas.height = freqBins;
-  
-  const imageData = spectrogramCtx.createImageData(timeSteps, freqBins);
-  const data = imageData.data;
-  
-  // Find min/max values for normalization with dB scaling
-  let minMagnitude = -80; // Typical noise floor in dB
-  let maxMagnitude = -20; // Typical speech peak in dB
-  
-  // Find actual data range
-  let actualMax = -200;
-  let actualMin = 0;
-  
-  state.audio.spectrograms.forEach(spectrum => {
-    spectrum.forEach(value => {
-      if (Number.isFinite(value) && value > -200) { // Filter out very low values
-        actualMax = Math.max(actualMax, value);
-        actualMin = Math.min(actualMin, value);
-      }
-    });
-  });
-  
-  // Use adaptive range if we have valid data
-  if (actualMax > -200) {
-    maxMagnitude = actualMax;
-    minMagnitude = Math.min(actualMin, actualMax - 50); // At least 50 dB dynamic range
-  }
-  
-  // Ensure reasonable dynamic range (at least 30 dB)
-  if (maxMagnitude - minMagnitude < 30) {
-    minMagnitude = maxMagnitude - 50;
-  }
-  
-  const magnitudeRange = maxMagnitude - minMagnitude;
-  
-  // Fill the spectrogram data (flip Y-axis so high frequencies are at top)
-  for (let t = 0; t < timeSteps; t++) {
-    const spectrum = state.audio.spectrograms[t];
-    if (!Array.isArray(spectrum)) continue;
-    
-    for (let f = 0; f < freqBins; f++) {
-      const magnitude = spectrum[f] || -100; // Default to very low value
-      let normalizedMagnitude = Math.max(0, Math.min(1, (magnitude - minMagnitude) / magnitudeRange));
-      
-      // Apply gamma correction to enhance weak signals (gamma < 1 brightens)
-      normalizedMagnitude = Math.pow(normalizedMagnitude, 0.5);
-      
-      // Convert to jet colormap
-      const color = jetColormap(normalizedMagnitude, 1);
-      const rgbaMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-      
-      if (rgbaMatch) {
-        // Flip Y coordinate (high frequencies at top)
-        const pixelIndex = ((freqBins - 1 - f) * timeSteps + t) * 4;
-        data[pixelIndex] = parseInt(rgbaMatch[1]);     // R
-        data[pixelIndex + 1] = parseInt(rgbaMatch[2]); // G
-        data[pixelIndex + 2] = parseInt(rgbaMatch[3]); // B
-        data[pixelIndex + 3] = 255;                    // A
-      }
-    }
-  }
-  
-  spectrogramCtx.putImageData(imageData, 0, 0);
-  
-  // Draw the spectrogram to the main canvas
-  ctx.save();
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(
-    spectrogramCanvas,
-    0, 0, timeSteps, freqBins,
-    margin, spectrogramTop, usableWidth, spectrogramHeight
-  );
-  
-  // Add border
-  ctx.strokeStyle = 'rgba(148, 197, 255, 0.3)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(margin, spectrogramTop, usableWidth, spectrogramHeight);
-  
-  // Draw labels
-  const labelY = spectrogramTop + spectrogramHeight / 2;
-  ctx.fillStyle = 'rgba(220, 232, 250, 0.92)';
-  ctx.font = '12px "Inter", system-ui';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-  ctx.shadowBlur = 2;
-  ctx.fillText(AUDIO_STYLE.label, margin - 18, labelY);
-  
-  // Draw frequency range label
-  ctx.textAlign = 'left';
-  ctx.font = '10px "Inter", system-ui';
-  ctx.fillStyle = 'rgba(148, 197, 255, 0.7)';
-  ctx.fillText(`0-${(MAX_FREQ/1000).toFixed(1)}kHz (dB)`, margin + 5, spectrogramTop + 15);
-  
-  ctx.restore();
-}
-
-function btnGuarded(handler) {
-  return () => {
-    const result = handler();
-    if (result && typeof result.catch === 'function') {
-      result.catch((err) => console.error(err));
-    }
-  };
-}
-
-modeBtn.addEventListener('click', btnGuarded(async () => {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  const nextMode = state.mode === 'analysis' ? 'performance' : 'analysis';
-  ws.send(JSON.stringify({ type: 'mode', mode: nextMode }));
-}));
-
-startBtn.addEventListener('click', btnGuarded(async () => {
-  if (!listening) {
-    await startListening();
+// Event listeners
+startBtn.addEventListener('click', () => {
+  if (isRecording) {
+    stopRecording();
   } else {
-    stopListening();
+    startRecording();
   }
-}));
-
-gridBtn.addEventListener('click', () => {
-  state.showGrid = !state.showGrid;
-  updateModeUI();
-  renderScene();
 });
 
-resetBtn.addEventListener('click', btnGuarded(async () => {
+modeBtn.addEventListener('click', () => {
+  const currentMode = modePill.textContent.includes('Analysis') ? 'analysis' : 'performance';
+  const newMode = currentMode === 'analysis' ? 'performance' : 'analysis';
+  modePill.textContent = `Mode: ${newMode.charAt(0).toUpperCase() + newMode.slice(1)}`;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'mode', mode: newMode }));
+  }
+});
+
+resetBtn.addEventListener('click', () => {
+  layerHistory = {};
+  audioHistory = { times: [], rms: [], raw_audio: [] };
+  keywords = [];
+  currentTranscript = '';
+  speakerColors = {};
+  neuronAnalysisData = {};
+  
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'reset' }));
   }
-  state.layers = [];
-  state.audio = { times: [], spectrograms: [] };
-  renderScene();
-  updateTranscript();
-}));
+});
 
-updateButtons();
-updateModeUI();
-updateDiagnostics();
-updateTranscript();
-renderScene();
+gridBtn.addEventListener('click', () => {
+  showProjection = !showProjection;
+  gridBtn.textContent = showProjection ? 'Hide Grid' : 'Show Grid';
+});
 
-ensureSocket().catch(() => undefined);
+// Canvas setup
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight - 100;
+}
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// Start animation loop
+draw();

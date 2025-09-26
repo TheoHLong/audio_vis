@@ -14,6 +14,7 @@ from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
 
 from .config import PipelineConfig
 from .keywords import KeywordCandidate, KeywordExtractor
+from .neuron_analysis import NeuronAnalyzer
 from .projection import FrozenSemanticProjector, SpeakerClusterer
 from .utils import (
     RollingStat,
@@ -85,6 +86,9 @@ class CometPipeline:
             stride_seconds=self.config.keyword_stride_seconds,
         )
         self.keywords_cache: List[KeywordCandidate] = []
+        
+        # Initialize neuron analyzer
+        self.neuron_analyzer = NeuronAnalyzer(n_components=3)
 
         self.frame_buffer = np.zeros(0, dtype=np.float32)
         self.frame_index = 0
@@ -287,16 +291,53 @@ class CometPipeline:
             activities = [round(entry["activity"], 4) for entry in buffer]
             vectors = [entry["vector"] for entry in buffer]
             speakers = [entry.get("speaker") for entry in buffer]
-            layers_payload.append(
-                {
-                    "name": name,
-                    "times": times,
-                    "indices": indices,
-                    "activities": activities,
-                    "vectors": vectors,
-                    "speakers": speakers,
-                }
-            )
+            
+            # Prepare activations matrix for neuron analysis
+            activation_matrix = np.array(vectors).T  # Shape: (n_neurons, n_time)
+            
+            # Extract audio features if we have raw audio
+            neuron_analysis_data = {}
+            if self.audio_history and len(self.audio_history) > 0:
+                # Combine audio frames for feature extraction
+                audio_frames = [entry["raw_audio"] for entry in self.audio_history]
+                if audio_frames:
+                    combined_audio = np.concatenate(audio_frames)
+                    audio_features = self.neuron_analyzer.extract_audio_features(
+                        combined_audio, self.config.sample_rate
+                    )
+                    
+                    # Analyze neurons if we have enough data
+                    if activation_matrix.shape[1] > 1:
+                        analysis_result = self.neuron_analyzer.analyze_layer(
+                            name, activation_matrix.T, audio_features
+                        )
+                        
+                        neuron_analysis_data = {
+                            "sorted_indices": analysis_result["sorted_indices"],
+                            "pc_timeseries": analysis_result["pc_timeseries"],
+                            "explained_variance": analysis_result["explained_variance"],
+                        }
+                        
+                        # Compute layer statistics
+                        layer_stats = self.neuron_analyzer.compute_layer_stats(
+                            analysis_result["reordered_activations"]
+                        )
+                        neuron_analysis_data["stats"] = layer_stats
+            
+            layer_data = {
+                "name": name,
+                "times": times,
+                "indices": indices,
+                "activities": activities,
+                "vectors": vectors,
+                "speakers": speakers,
+            }
+            
+            # Add neuron analysis data if available
+            if neuron_analysis_data:
+                layer_data["neuron_analysis"] = neuron_analysis_data
+                
+            layers_payload.append(layer_data)
 
         audio_payload = {
             "times": [],
