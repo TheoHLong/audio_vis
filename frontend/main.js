@@ -115,10 +115,13 @@ function computeSpectrogram(audioBuffer) {
   
   fft(real, imag);
   
-  // Compute magnitude spectrum (only positive frequencies)
+  // Compute magnitude spectrum with logarithmic scaling (dB)
   const spectrum = new Float32Array(FREQ_BINS);
   for (let i = 0; i < FREQ_BINS; i++) {
-    spectrum[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+    const magnitude = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+    // Convert to dB with floor to prevent -Infinity
+    const magnitudeDB = 20 * Math.log10(Math.max(magnitude, 1e-10));
+    spectrum[i] = magnitudeDB;
   }
   
   return spectrum;
@@ -451,7 +454,7 @@ function drawPlaceholder(width, height) {
   ctx.fillStyle = 'rgba(148, 197, 255, 0.25)';
   ctx.font = '14px "Inter", system-ui';
   ctx.textAlign = 'center';
-  ctx.fillText('Speak to see neural activation heatmaps...', width / 2, height / 2);
+  ctx.fillText('Speak to see neural activation heatmaps and audio spectrogram...', width / 2, height / 2);
   ctx.textAlign = 'left';
 }
 
@@ -720,24 +723,32 @@ function drawAudioSpectrogram(width, height, domain) {
   const imageData = spectrogramCtx.createImageData(timeSteps, freqBins);
   const data = imageData.data;
   
-  // Find min/max values for normalization
-  let minMagnitude = Number.POSITIVE_INFINITY;
-  let maxMagnitude = Number.NEGATIVE_INFINITY;
+  // Find min/max values for normalization with dB scaling
+  let minMagnitude = -80; // Typical noise floor in dB
+  let maxMagnitude = -20; // Typical speech peak in dB
+  
+  // Find actual data range
+  let actualMax = -200;
+  let actualMin = 0;
   
   state.audio.spectrograms.forEach(spectrum => {
     spectrum.forEach(value => {
-      if (Number.isFinite(value)) {
-        minMagnitude = Math.min(minMagnitude, value);
-        maxMagnitude = Math.max(maxMagnitude, value);
+      if (Number.isFinite(value) && value > -200) { // Filter out very low values
+        actualMax = Math.max(actualMax, value);
+        actualMin = Math.min(actualMin, value);
       }
     });
   });
   
-  if (!Number.isFinite(minMagnitude) || !Number.isFinite(maxMagnitude)) {
-    minMagnitude = 0;
-    maxMagnitude = 1;
-  } else if (Math.abs(maxMagnitude - minMagnitude) < 1e-6) {
-    maxMagnitude = minMagnitude + 1;
+  // Use adaptive range if we have valid data
+  if (actualMax > -200) {
+    maxMagnitude = actualMax;
+    minMagnitude = Math.min(actualMin, actualMax - 50); // At least 50 dB dynamic range
+  }
+  
+  // Ensure reasonable dynamic range (at least 30 dB)
+  if (maxMagnitude - minMagnitude < 30) {
+    minMagnitude = maxMagnitude - 50;
   }
   
   const magnitudeRange = maxMagnitude - minMagnitude;
@@ -748,8 +759,11 @@ function drawAudioSpectrogram(width, height, domain) {
     if (!Array.isArray(spectrum)) continue;
     
     for (let f = 0; f < freqBins; f++) {
-      const magnitude = spectrum[f] || 0;
-      const normalizedMagnitude = (magnitude - minMagnitude) / magnitudeRange;
+      const magnitude = spectrum[f] || -100; // Default to very low value
+      let normalizedMagnitude = Math.max(0, Math.min(1, (magnitude - minMagnitude) / magnitudeRange));
+      
+      // Apply gamma correction to enhance weak signals (gamma < 1 brightens)
+      normalizedMagnitude = Math.pow(normalizedMagnitude, 0.5);
       
       // Convert to jet colormap
       const color = jetColormap(normalizedMagnitude, 1);
@@ -796,7 +810,7 @@ function drawAudioSpectrogram(width, height, domain) {
   ctx.textAlign = 'left';
   ctx.font = '10px "Inter", system-ui';
   ctx.fillStyle = 'rgba(148, 197, 255, 0.7)';
-  ctx.fillText(`0-${(MAX_FREQ/1000).toFixed(1)}kHz`, margin + 5, spectrogramTop + 15);
+  ctx.fillText(`0-${(MAX_FREQ/1000).toFixed(1)}kHz (dB)`, margin + 5, spectrogramTop + 15);
   
   ctx.restore();
 }
