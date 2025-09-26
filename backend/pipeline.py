@@ -201,7 +201,7 @@ class CometPipeline:
             self.semantic_tracker.max() + 1e-6,
         )
 
-        self.audio_history.append({"t": timestamp, "rms": rms_norm})
+        self.audio_history.append({"t": timestamp, "rms": rms_norm, "raw_audio": frame.tolist()})
 
         self._record_activity("L2", timestamp, l2_vec, speaker_id, rms=rms_norm)
         self._record_activity("L6", timestamp, l6_vec, speaker_id, energy=l6_norm, pitch=pitch_norm)
@@ -301,12 +301,14 @@ class CometPipeline:
         audio_payload = {
             "times": [],
             "rms": [],
+            "raw_audio": [],
         }
         if self.audio_history:
             base_audio = self.audio_history[0]["t"]
             audio_payload = {
                 "times": [round(entry["t"] - base_audio, 3) for entry in self.audio_history],
                 "rms": [round(entry["rms"], 4) for entry in self.audio_history],
+                "raw_audio": [entry["raw_audio"] for entry in self.audio_history],
             }
 
         payload = {

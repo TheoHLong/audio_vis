@@ -17,7 +17,12 @@ const LAYER_CONFIG = {
   L6: { label: 'L6 · neural activations (jet)' },
   L2: { label: 'L2 · neural activations (jet)' },
 };
-const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'waveform' };
+const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'spectrogram' };
+
+// FFT and Spectrogram configuration
+const FFT_SIZE = 512;
+const FREQ_BINS = FFT_SIZE / 2; // 256 frequency bins
+const MAX_FREQ = TARGET_SAMPLE_RATE / 2; // Nyquist frequency (8kHz)
 
 // Jet colormap for heatmaps
 const JET_GRADIENT = [
@@ -46,9 +51,82 @@ const HEATMAP_TOP_MARGIN = 110;
 const HEATMAP_BOTTOM_MARGIN = 150;
 const HEATMAP_MIN_BAND_HEIGHT = 120;
 
+// FFT implementation for spectrogram computation
+function fft(real, imag) {
+  const n = real.length;
+  if (n <= 1) return;
+  
+  // Bit-reverse reordering
+  for (let i = 0; i < n; i++) {
+    let j = 0;
+    for (let k = 0; k < Math.log2(n); k++) {
+      j = (j << 1) | ((i >> k) & 1);
+    }
+    if (j > i) {
+      [real[i], real[j]] = [real[j], real[i]];
+      [imag[i], imag[j]] = [imag[j], imag[i]];
+    }
+  }
+  
+  // Cooley-Tukey FFT
+  for (let size = 2; size <= n; size *= 2) {
+    const halfSize = size / 2;
+    const w_real = Math.cos(2 * Math.PI / size);
+    const w_imag = -Math.sin(2 * Math.PI / size);
+    
+    for (let i = 0; i < n; i += size) {
+      let wr = 1, wi = 0;
+      for (let j = 0; j < halfSize; j++) {
+        const u_real = real[i + j];
+        const u_imag = imag[i + j];
+        const v_real = real[i + j + halfSize] * wr - imag[i + j + halfSize] * wi;
+        const v_imag = real[i + j + halfSize] * wi + imag[i + j + halfSize] * wr;
+        
+        real[i + j] = u_real + v_real;
+        imag[i + j] = u_imag + v_imag;
+        real[i + j + halfSize] = u_real - v_real;
+        imag[i + j + halfSize] = u_imag - v_imag;
+        
+        const temp_wr = wr * w_real - wi * w_imag;
+        wi = wr * w_imag + wi * w_real;
+        wr = temp_wr;
+      }
+    }
+  }
+}
+
+function computeSpectrogram(audioBuffer) {
+  const n = Math.min(audioBuffer.length, FFT_SIZE);
+  const real = new Float64Array(FFT_SIZE);
+  const imag = new Float64Array(FFT_SIZE);
+  
+  // Apply Hamming window and copy audio data
+  for (let i = 0; i < n; i++) {
+    const window = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (n - 1));
+    real[i] = audioBuffer[i] * window;
+    imag[i] = 0;
+  }
+  
+  // Zero-pad if necessary
+  for (let i = n; i < FFT_SIZE; i++) {
+    real[i] = 0;
+    imag[i] = 0;
+  }
+  
+  fft(real, imag);
+  
+  // Compute magnitude spectrum (only positive frequencies)
+  const spectrum = new Float32Array(FREQ_BINS);
+  for (let i = 0; i < FREQ_BINS; i++) {
+    spectrum[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+  }
+  
+  return spectrum;
+}
+
 const state = {
   layers: [],
-  audio: { times: [], rms: [] },
+  audio: { times: [], spectrograms: [] }, // Changed from rms to spectrograms
   speakerColors: {},
   diagnostics: {},
   transcript: '',
@@ -211,7 +289,28 @@ function handleMessage(message) {
   if (data.type === 'layer_activity') {
     const rawLayers = data.layers || [];
     state.layers = enrichLayers(rawLayers);
-    state.audio = data.audio || { times: [], rms: [] };
+    
+    // Process audio data - compute spectrograms from raw audio if available
+    const audioData = data.audio || { times: [], rms: [], raw_audio: [] };
+    if (audioData.raw_audio && audioData.raw_audio.length > 0) {
+      // Compute spectrograms from raw audio data
+      const spectrograms = [];
+      const times = [];
+      
+      audioData.raw_audio.forEach((audioFrame, index) => {
+        if (Array.isArray(audioFrame) && audioFrame.length > 0) {
+          const spectrum = computeSpectrogram(audioFrame);
+          spectrograms.push(Array.from(spectrum));
+          times.push(audioData.times[index] || index * 0.032); // Default ~32ms frame rate
+        }
+      });
+      
+      state.audio = { times, spectrograms };
+    } else {
+      // Fallback to RMS if raw audio not available
+      state.audio = { times: audioData.times || [], spectrograms: [] };
+    }
+    
     state.diagnostics = data.meta?.diagnostics || {};
     state.mode = data.meta?.mode || state.mode;
     state.transcript = data.meta?.transcript || '';
@@ -276,7 +375,7 @@ function renderScene() {
   const activeLayers = LAYER_ORDER
     .map((name) => state.layers.find((layer) => layer.name === name))
     .filter((layer) => layer && layer.times?.length && layer.vectors?.length);
-  const hasAudio = state.audio?.times?.length;
+  const hasAudio = state.audio?.times?.length && state.audio?.spectrograms?.length;
 
   if (!activeLayers.length && !hasAudio) {
     drawPlaceholder(width, height);
@@ -293,7 +392,7 @@ function renderScene() {
   });
 
   if (hasAudio) {
-    drawAudioSurface(width, height, domain);
+    drawAudioSpectrogram(width, height, domain);
   }
 }
 
@@ -590,97 +689,115 @@ function createIntensityGradient(points, margin, usableWidth, alpha = 1) {
   return gradient;
 }
 
-function drawAudioSurface(width, height, domain) {
-  const margin = 100;
+function drawAudioSpectrogram(width, height, domain) {
+  if (!state.audio.spectrograms || state.audio.spectrograms.length === 0) {
+    return;
+  }
+
+  const margin = HEATMAP_LEFT_MARGIN;
   const usableWidth = width - margin * 2;
-  const baseline = height - margin + AUDIO_STYLE.offset;
-  const amplitude = 52;
-
-  const audioPoints = [];
-
-  // Draw audio as a simple filled waveform
-  ctx.beginPath();
-  ctx.moveTo(margin, baseline);
+  const spectrogramHeight = 80; // Fixed height for spectrogram
+  const spectrogramTop = height - HEATMAP_BOTTOM_MARGIN + 20;
   
-  state.audio.times.forEach((time, idx) => {
-    const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-    const intensity = Math.min(1, Math.max(0, state.audio.rms[idx] ?? 0));
-    const y = baseline - intensity * amplitude;
-    audioPoints.push({ x, intensity });
+  if (usableWidth <= 0 || spectrogramHeight <= 0) {
+    return;
+  }
+
+  const timeSteps = state.audio.times.length;
+  const freqBins = FREQ_BINS;
+  
+  if (timeSteps === 0 || freqBins === 0) {
+    return;
+  }
+
+  // Create temporary canvas for spectrogram data
+  const spectrogramCanvas = document.createElement('canvas');
+  const spectrogramCtx = spectrogramCanvas.getContext('2d');
+  
+  spectrogramCanvas.width = timeSteps;
+  spectrogramCanvas.height = freqBins;
+  
+  const imageData = spectrogramCtx.createImageData(timeSteps, freqBins);
+  const data = imageData.data;
+  
+  // Find min/max values for normalization
+  let minMagnitude = Number.POSITIVE_INFINITY;
+  let maxMagnitude = Number.NEGATIVE_INFINITY;
+  
+  state.audio.spectrograms.forEach(spectrum => {
+    spectrum.forEach(value => {
+      if (Number.isFinite(value)) {
+        minMagnitude = Math.min(minMagnitude, value);
+        maxMagnitude = Math.max(maxMagnitude, value);
+      }
+    });
+  });
+  
+  if (!Number.isFinite(minMagnitude) || !Number.isFinite(maxMagnitude)) {
+    minMagnitude = 0;
+    maxMagnitude = 1;
+  } else if (Math.abs(maxMagnitude - minMagnitude) < 1e-6) {
+    maxMagnitude = minMagnitude + 1;
+  }
+  
+  const magnitudeRange = maxMagnitude - minMagnitude;
+  
+  // Fill the spectrogram data (flip Y-axis so high frequencies are at top)
+  for (let t = 0; t < timeSteps; t++) {
+    const spectrum = state.audio.spectrograms[t];
+    if (!Array.isArray(spectrum)) continue;
     
-    if (idx === 0) {
-      ctx.lineTo(x, y);
-    } else {
-      // Smooth the line
-      const prevX = margin + ((state.audio.times[idx-1] - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-      const cpX = (prevX + x) / 2;
-      const prevIntensity = Math.min(1, Math.max(0, state.audio.rms[idx - 1] ?? 0));
-      const prevY = baseline - prevIntensity * amplitude;
-      const cpY = (prevY + y) / 2;
-      ctx.quadraticCurveTo(cpX, cpY, x, y);
+    for (let f = 0; f < freqBins; f++) {
+      const magnitude = spectrum[f] || 0;
+      const normalizedMagnitude = (magnitude - minMagnitude) / magnitudeRange;
+      
+      // Convert to jet colormap
+      const color = jetColormap(normalizedMagnitude, 1);
+      const rgbaMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      
+      if (rgbaMatch) {
+        // Flip Y coordinate (high frequencies at top)
+        const pixelIndex = ((freqBins - 1 - f) * timeSteps + t) * 4;
+        data[pixelIndex] = parseInt(rgbaMatch[1]);     // R
+        data[pixelIndex + 1] = parseInt(rgbaMatch[2]); // G
+        data[pixelIndex + 2] = parseInt(rgbaMatch[3]); // B
+        data[pixelIndex + 3] = 255;                    // A
+      }
     }
-  });
+  }
   
-  ctx.lineTo(margin + usableWidth, baseline);
-  ctx.closePath();
+  spectrogramCtx.putImageData(imageData, 0, 0);
   
-  const fillGradient = createIntensityGradient(audioPoints, margin, usableWidth, 0.42);
+  // Draw the spectrogram to the main canvas
   ctx.save();
-  ctx.fillStyle = fillGradient;
-  ctx.shadowColor = 'rgba(5, 12, 30, 0.32)';
-  ctx.shadowBlur = 12;
-  ctx.shadowOffsetY = 4;
-  ctx.fill();
-
-  ctx.globalCompositeOperation = 'source-atop';
-  const audioShade = ctx.createLinearGradient(0, baseline - amplitude, 0, baseline + amplitude * 0.35);
-  audioShade.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
-  audioShade.addColorStop(0.6, 'rgba(20, 40, 78, 0.12)');
-  audioShade.addColorStop(1, 'rgba(6, 12, 24, 0.6)');
-  ctx.fillStyle = audioShade;
-  ctx.fill();
-  ctx.restore();
-
-  const strokeGradient = createIntensityGradient(audioPoints, margin, usableWidth, 0.85);
-  ctx.beginPath();
-  ctx.moveTo(margin, baseline);
-  state.audio.times.forEach((time, idx) => {
-    const x = margin + ((time - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-    const y = baseline - state.audio.rms[idx] * amplitude;
-    if (idx === 0) {
-      ctx.lineTo(x, y);
-    } else {
-      const prevX = margin + ((state.audio.times[idx - 1] - domain.minTime) / (domain.maxTime - domain.minTime)) * usableWidth;
-      const cpX = (prevX + x) / 2;
-      const prevY = baseline - state.audio.rms[idx - 1] * amplitude;
-      const cpY = (prevY + y) / 2;
-      ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
-    }
-  });
-  ctx.lineTo(margin + usableWidth, baseline);
-  ctx.strokeStyle = strokeGradient;
-  ctx.lineWidth = 1.6;
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(margin, baseline);
-  ctx.lineTo(margin + usableWidth, baseline);
-  ctx.strokeStyle = 'rgba(12, 18, 35, 0.5)';
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(
+    spectrogramCanvas,
+    0, 0, timeSteps, freqBins,
+    margin, spectrogramTop, usableWidth, spectrogramHeight
+  );
+  
+  // Add border
+  ctx.strokeStyle = 'rgba(148, 197, 255, 0.3)';
   ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Draw label - position to be fully visible
-  ctx.save();
-  ctx.fillStyle = 'rgba(220, 230, 245, 0.9)';
+  ctx.strokeRect(margin, spectrogramTop, usableWidth, spectrogramHeight);
+  
+  // Draw labels
+  const labelY = spectrogramTop + spectrogramHeight / 2;
+  ctx.fillStyle = 'rgba(220, 232, 250, 0.92)';
   ctx.font = '12px "Inter", system-ui';
   ctx.textAlign = 'right';
-  const labelX = margin - 8;
-  const labelY = baseline - 5; // Position just above the baseline
-  // Add subtle text shadow for better readability
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
   ctx.shadowBlur = 2;
-  ctx.fillText(AUDIO_STYLE.label, labelX, labelY);
+  ctx.fillText(AUDIO_STYLE.label, margin - 18, labelY);
+  
+  // Draw frequency range label
   ctx.textAlign = 'left';
+  ctx.font = '10px "Inter", system-ui';
+  ctx.fillStyle = 'rgba(148, 197, 255, 0.7)';
+  ctx.fillText(`0-${(MAX_FREQ/1000).toFixed(1)}kHz`, margin + 5, spectrogramTop + 15);
+  
   ctx.restore();
 }
 
@@ -720,7 +837,7 @@ resetBtn.addEventListener('click', btnGuarded(async () => {
     ws.send(JSON.stringify({ type: 'reset' }));
   }
   state.layers = [];
-  state.audio = { times: [], rms: [] };
+  state.audio = { times: [], spectrograms: [] };
   renderScene();
   updateTranscript();
 }));
