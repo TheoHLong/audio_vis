@@ -25,7 +25,7 @@ class PipelineConfig:
 
     semantic_projector_path: Optional[str] = None
     activity_neurons: int = 64
-    activity_history_seconds: float = 15.0
+    activity_history_seconds: float = 6.0
 
     @property
     def frame_size(self) -> int:

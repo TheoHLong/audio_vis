@@ -6,7 +6,7 @@ const diagnosticsList = document.getElementById('diagnostics');
 const transcriptText = document.getElementById('transcript-text');
 
 const TARGET_SAMPLE_RATE = 16_000;
-const HISTORY_SECONDS = 15;
+const HISTORY_SECONDS = 6;
 
 const LAYER_ORDER = ['L2', 'L6', 'L10'];
 const LAYER_CONFIG = {
