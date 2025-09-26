@@ -11,7 +11,7 @@ const transcriptText = document.getElementById('transcript-text');
 const TARGET_SAMPLE_RATE = 16_000;
 const HISTORY_SECONDS = 15;
 
-const LAYER_ORDER = ['L10', 'L6', 'L2'];
+const LAYER_ORDER = ['L2', 'L6', 'L10'];
 const LAYER_CONFIG = {
   L10: { label: 'L10 · Semantic Processing (high-level meaning)' },
   L6: { label: 'L6 · Prosodic Features (rhythm, emotion)' },
@@ -32,6 +32,10 @@ const SPECTRO_ROLLING_SECONDS = 2.0;
 const SPECTRO_ROLLING_FRAMES = Math.max(
   1,
   Math.round((SPECTRO_ROLLING_SECONDS * TARGET_SAMPLE_RATE) / SPECTRO_HOP)
+);
+const SPECTRO_HISTORY_SECONDS = 3.0;
+const SPECTRO_HISTORY_SAMPLES = Math.round(
+  SPECTRO_HISTORY_SECONDS * TARGET_SAMPLE_RATE
 );
 const LN10 = Math.log(10);
 const HANN_WINDOW = (() => {
@@ -79,7 +83,7 @@ const HEATMAP_TOP_MARGIN = 150;
 const HEATMAP_BOTTOM_MARGIN = 50;
 const HEATMAP_MIN_BAND_HEIGHT = 100;
 const PC_TRACK_HEIGHT = 40;
-const STATS_TRACK_HEIGHT = 30;
+const STATS_TRACK_HEIGHT = 0; // Stats track disabled per updated design
 const TIMELINE_HEIGHT = 40;
 
 // FFT implementation for spectrogram computation
@@ -500,7 +504,8 @@ function draw() {
     if (!layer || !layer.vectors || layer.vectors.length === 0) return;
     
     const layerY = currentY + idx * layerTotalHeight;
-    const heatmapHeight = Math.min(HEATMAP_MIN_BAND_HEIGHT, layerTotalHeight - PC_TRACK_HEIGHT - STATS_TRACK_HEIGHT - 20);
+    const availableHeight = Math.max(0, layerTotalHeight - PC_TRACK_HEIGHT - 12);
+    const heatmapHeight = Math.min(HEATMAP_MIN_BAND_HEIGHT, availableHeight);
     
     // Draw layer label
     ctx.font = '12px sans-serif';
@@ -516,13 +521,6 @@ function draw() {
                    heatmapWidth, PC_TRACK_HEIGHT, layer.neuron_analysis, 
                    layer.times, layerName);
       
-      // Draw stats track
-      if (layer.neuron_analysis.stats) {
-        drawStatsTrack(ctx, HEATMAP_LEFT_MARGIN, 
-                      layerY + heatmapHeight + PC_TRACK_HEIGHT + 10,
-                      heatmapWidth, STATS_TRACK_HEIGHT, 
-                      layer.neuron_analysis.stats, layerName);
-      }
     }
   });
   
@@ -597,20 +595,54 @@ function drawSpectrogram(ctx, x, y, width, height) {
 function computeSpectrogram(audioFrames) {
   if (!audioFrames || audioFrames.length === 0) return null;
 
+  const maxSamples = Math.max(SPECTRO_HISTORY_SAMPLES, SPECTRO_WINDOW);
+  const gatherTarget = maxSamples + SPECTRO_WINDOW;
+
+  const chunks = [];
+  let gathered = 0;
+  for (let idx = audioFrames.length - 1; idx >= 0 && gathered < gatherTarget; idx--) {
+    const frame = audioFrames[idx];
+    if (!frame || !frame.length) continue;
+    chunks.push(frame);
+    gathered += frame.length;
+  }
+
+  if (chunks.length === 0) return null;
+  chunks.reverse();
+
   let totalSamples = 0;
-  for (const frame of audioFrames) {
-    if (frame && frame.length) totalSamples += frame.length;
+  for (const frame of chunks) {
+    totalSamples += frame.length;
   }
   if (totalSamples < SPECTRO_WINDOW) return null;
 
-  const samples = new Float32Array(totalSamples);
-  let offset = 0;
-  for (const frame of audioFrames) {
+  const takeSamples = Math.min(totalSamples, maxSamples);
+  const samples = new Float32Array(takeSamples);
+  let writeOffset = 0;
+  let skip = totalSamples - takeSamples;
+
+  for (const frame of chunks) {
     if (!frame || !frame.length) continue;
-    samples.set(frame, offset);
-    offset += frame.length;
+    let start = 0;
+    let length = frame.length;
+    if (skip > 0) {
+      if (skip >= length) {
+        skip -= length;
+        continue;
+      }
+      start = skip;
+      length -= skip;
+      skip = 0;
+    }
+    for (let i = 0; i < length && writeOffset < takeSamples; i++) {
+      samples[writeOffset++] = frame[start + i];
+    }
+    if (writeOffset >= takeSamples) {
+      break;
+    }
   }
 
+  const offset = writeOffset;
   if (offset < SPECTRO_WINDOW) return null;
 
   // Apply pre-emphasis
@@ -637,18 +669,15 @@ function computeSpectrogram(audioFrames) {
   if (frameCount <= 0) return null;
 
   const powerSpectrogram = new Array(frameCount);
-  const real = new Array(SPECTRO_FFT);
-  const imag = new Array(SPECTRO_FFT);
+  const real = new Float32Array(SPECTRO_FFT);
+  const imag = new Float32Array(SPECTRO_FFT);
 
   for (let frameIdx = 0; frameIdx < frameCount; frameIdx++) {
+    real.fill(0);
+    imag.fill(0);
     const start = frameIdx * SPECTRO_HOP;
-    for (let j = 0; j < SPECTRO_FFT; j++) {
-      if (j < SPECTRO_WINDOW) {
-        real[j] = filtered[start + j] * HANN_WINDOW[j];
-      } else {
-        real[j] = 0;
-      }
-      imag[j] = 0;
+    for (let j = 0; j < SPECTRO_WINDOW; j++) {
+      real[j] = filtered[start + j] * HANN_WINDOW[j];
     }
 
     fft(real, imag);
@@ -657,7 +686,6 @@ function computeSpectrogram(audioFrames) {
     for (let bin = 0; bin < SPECTRO_BINS; bin++) {
       const re = real[bin];
       const im = imag[bin];
-      // Power spectrum (magnitude squared)
       magnitudes[bin] = re * re + im * im;
     }
     powerSpectrogram[frameIdx] = magnitudes;
@@ -701,7 +729,10 @@ function computeSpectrogram(audioFrames) {
   if (exposureValues.length === 0) return null;
 
   const sortedExposure = exposureValues.slice().sort((a, b) => a - b);
-  const percentileIndex = Math.max(0, Math.min(sortedExposure.length - 1, Math.floor(sortedExposure.length * 0.99)));
+  const percentileIndex = Math.max(
+    0,
+    Math.min(sortedExposure.length - 1, Math.floor(sortedExposure.length * 0.99))
+  );
   const maxDb = sortedExposure[percentileIndex];
   const minDb = maxDb - SPECTRO_DYNAMIC_RANGE;
   const dbRange = Math.max(1e-6, maxDb - minDb);
