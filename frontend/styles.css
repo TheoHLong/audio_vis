@@ -139,19 +139,6 @@ button:hover {
   color: rgba(165, 243, 252, 0.9);
 }
 
-.mode-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.3rem 0.8rem;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.15);
-  color: rgba(191, 219, 254, 0.75);
-  font-size: 0.75rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
 .legend ul {
   list-style: none;
   margin: 0 0 1rem;

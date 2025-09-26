@@ -1,11 +1,8 @@
 const canvas = document.getElementById('activity-canvas');
 const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('start-btn');
-const modeBtn = document.getElementById('mode-btn');
 const resetBtn = document.getElementById('reset-btn');
-const gridBtn = document.getElementById('projection-btn');
 const diagnosticsList = document.getElementById('diagnostics');
-const modePill = document.getElementById('mode-pill');
 const transcriptText = document.getElementById('transcript-text');
 
 const TARGET_SAMPLE_RATE = 16_000;
@@ -163,13 +160,11 @@ let audioHistory = { times: [], rms: [], raw_audio: [] };
 let keywords = [];
 let currentTranscript = '';
 let speakerColors = {};
-let neuronAnalysisData = {};  // Store neuron sorting and PC data
 let ws = null;
 let isRecording = false;
 let audioContext = null;
 let processor = null;
 let source = null;
-let showProjection = true;
 
 // Z-score normalization per neuron
 function zScoreNormalize(vectors) {
@@ -461,7 +456,6 @@ function draw() {
   
   ctx.font = '12px sans-serif';
   ctx.fillStyle = '#888888';
-  ctx.fillText(`Mode: ${showProjection ? 'Analysis' : 'Performance'}`, 20, 50);
   
   // Draw transcript
   if (currentTranscript) {
@@ -932,32 +926,16 @@ startBtn.addEventListener('click', () => {
   }
 });
 
-modeBtn.addEventListener('click', () => {
-  const currentMode = modePill.textContent.includes('Analysis') ? 'analysis' : 'performance';
-  const newMode = currentMode === 'analysis' ? 'performance' : 'analysis';
-  modePill.textContent = `Mode: ${newMode.charAt(0).toUpperCase() + newMode.slice(1)}`;
-  
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'mode', mode: newMode }));
-  }
-});
-
 resetBtn.addEventListener('click', () => {
   layerHistory = {};
   audioHistory = { times: [], rms: [], raw_audio: [] };
   keywords = [];
   currentTranscript = '';
   speakerColors = {};
-  neuronAnalysisData = {};
   
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'reset' }));
   }
-});
-
-gridBtn.addEventListener('click', () => {
-  showProjection = !showProjection;
-  gridBtn.textContent = showProjection ? 'Hide Grid' : 'Show Grid';
 });
 
 // Canvas setup
