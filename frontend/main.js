@@ -20,9 +20,33 @@ const LAYER_CONFIG = {
 const AUDIO_STYLE = { color: '#38bdf8', offset: 10, label: 'spectrogram' };
 
 // FFT and Spectrogram configuration
-const FFT_SIZE = 512;
-const FREQ_BINS = FFT_SIZE / 2; // 256 frequency bins
-const MAX_FREQ = TARGET_SAMPLE_RATE / 2; // Nyquist frequency (8kHz)
+const SPECTRO_FFT = 512;
+const SPECTRO_WINDOW = Math.round(0.025 * TARGET_SAMPLE_RATE); // 25 ms window
+const SPECTRO_HOP = Math.round(0.010 * TARGET_SAMPLE_RATE);     // 10 ms hop
+const SPECTRO_BINS = SPECTRO_FFT / 2;
+const SPECTRO_PREEMPH = 0.97;
+const SPECTRO_HP_CUTOFF = 50; // Hz high-pass for rumble removal
+const SPECTRO_DYNAMIC_RANGE = 80; // dB span shown at any time
+const SPECTRO_GAMMA = 0.85; // Contrast curve in display space
+const SPECTRO_ROLLING_SECONDS = 2.0;
+const SPECTRO_ROLLING_FRAMES = Math.max(
+  1,
+  Math.round((SPECTRO_ROLLING_SECONDS * TARGET_SAMPLE_RATE) / SPECTRO_HOP)
+);
+const LN10 = Math.log(10);
+const HANN_WINDOW = (() => {
+  const window = new Float32Array(SPECTRO_WINDOW);
+  for (let i = 0; i < SPECTRO_WINDOW; i++) {
+    window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (SPECTRO_WINDOW - 1));
+  }
+  return window;
+})();
+const HP_ALPHA = (() => {
+  if (SPECTRO_HP_CUTOFF <= 0) return 1.0;
+  const dt = 1 / TARGET_SAMPLE_RATE;
+  const rc = 1 / (2 * Math.PI * SPECTRO_HP_CUTOFF);
+  return rc / (rc + dt);
+})();
 
 // Viridis colormap for better perceptual uniformity
 const VIRIDIS_GRADIENT = [
@@ -508,70 +532,207 @@ function draw() {
 // Spectrogram drawing function
 function drawSpectrogram(ctx, x, y, width, height) {
   if (!audioHistory.raw_audio || audioHistory.raw_audio.length === 0) return;
+
+  const spectrogram = computeSpectrogram(audioHistory.raw_audio);
+  if (!spectrogram) return;
+
+  const { normalized, flux } = spectrogram;
+  if (!normalized || normalized.length === 0) return;
+
+  const fluxBandHeight = Math.min(28, Math.max(16, height * 0.18));
+  const imageHeight = Math.max(0, height - fluxBandHeight - 4);
   
   // Background
-  ctx.fillStyle = 'rgba(20, 20, 30, 0.5)';
+  ctx.fillStyle = 'rgba(20, 20, 30, 0.55)';
   ctx.fillRect(x, y, width, height);
   
-  const spectrogramData = computeSpectrogram(audioHistory.raw_audio);
-  if (!spectrogramData || spectrogramData.length === 0) return;
-  
-  const timeSteps = spectrogramData.length;
-  const freqBins = spectrogramData[0].length;
-  const timeWidth = width / timeSteps;
-  const freqHeight = height / freqBins;
-  
-  // Draw spectrogram
+  const timeSteps = normalized.length;
+  const freqBins = normalized[0].length;
+  if (timeSteps === 0 || freqBins === 0 || imageHeight <= 0) return;
+
+  const timeWidth = Math.max(1, width / timeSteps);
+  const freqHeight = imageHeight / freqBins;
+
+  // Draw spectrogram with perceptual mapping
   for (let t = 0; t < timeSteps; t++) {
     for (let f = 0; f < freqBins; f++) {
-      const magnitude = spectrogramData[t][f];
-      const normalizedMag = Math.log(1 + magnitude) / 10; // Log scale
-      
-      ctx.fillStyle = interpolateColor(MAGMA_GRADIENT, normalizedMag);
+      const value = normalized[t][f];
+      ctx.fillStyle = interpolateColor(MAGMA_GRADIENT, value);
       ctx.fillRect(
         x + t * timeWidth,
-        y + height - (f + 1) * freqHeight,
-        Math.ceil(timeWidth) + 1,
-        Math.ceil(freqHeight) + 1
+        y + imageHeight - (f + 1) * freqHeight,
+        Math.ceil(timeWidth),
+        Math.ceil(freqHeight)
       );
+    }
+  }
+
+  // Draw spectral flux overlay for onset visibility
+  if (flux && flux.length > 0 && fluxBandHeight > 0) {
+    const baseY = y + imageHeight + 2;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+    ctx.fillRect(x, baseY, width, fluxBandHeight);
+
+    const maxFlux = Math.max(...flux);
+    if (maxFlux > 0) {
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let t = 0; t < flux.length; t++) {
+        const normFlux = flux[t] / maxFlux;
+        const xPos = x + t * timeWidth + timeWidth / 2;
+        const yPos = baseY + fluxBandHeight - normFlux * fluxBandHeight;
+        if (t === 0) {
+          ctx.moveTo(xPos, yPos);
+        } else {
+          ctx.lineTo(xPos, yPos);
+        }
+      }
+      ctx.stroke();
     }
   }
 }
 
-// Compute spectrogram from raw audio
+// Compute spectrogram from raw audio frames with pre-emphasis and auto exposure
 function computeSpectrogram(audioFrames) {
-  if (!audioFrames || audioFrames.length === 0) return [];
-  
-  const spectrogram = [];
-  const hopSize = FFT_SIZE / 2;
-  
-  for (let i = 0; i < audioFrames.length; i++) {
-    const frame = audioFrames[i];
-    if (!frame || frame.length < FFT_SIZE) continue;
-    
-    // Apply Hanning window
-    const windowed = new Float32Array(FFT_SIZE);
-    for (let j = 0; j < FFT_SIZE; j++) {
-      const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * j / (FFT_SIZE - 1));
-      windowed[j] = frame[j] * window;
-    }
-    
-    // Compute FFT
-    const real = Array.from(windowed);
-    const imag = new Array(FFT_SIZE).fill(0);
-    fft(real, imag);
-    
-    // Calculate magnitude spectrum
-    const magnitudes = [];
-    for (let j = 0; j < FREQ_BINS; j++) {
-      const mag = Math.sqrt(real[j] * real[j] + imag[j] * imag[j]);
-      magnitudes.push(mag);
-    }
-    
-    spectrogram.push(magnitudes);
+  if (!audioFrames || audioFrames.length === 0) return null;
+
+  let totalSamples = 0;
+  for (const frame of audioFrames) {
+    if (frame && frame.length) totalSamples += frame.length;
   }
-  
-  return spectrogram;
+  if (totalSamples < SPECTRO_WINDOW) return null;
+
+  const samples = new Float32Array(totalSamples);
+  let offset = 0;
+  for (const frame of audioFrames) {
+    if (!frame || !frame.length) continue;
+    samples.set(frame, offset);
+    offset += frame.length;
+  }
+
+  if (offset < SPECTRO_WINDOW) return null;
+
+  // Apply pre-emphasis
+  const emphasized = new Float32Array(offset);
+  emphasized[0] = samples[0];
+  for (let i = 1; i < offset; i++) {
+    emphasized[i] = samples[i] - SPECTRO_PREEMPH * samples[i - 1];
+  }
+
+  // Optional high-pass filter to remove rumble
+  const filtered = new Float32Array(offset);
+  filtered[0] = emphasized[0];
+  let prevIn = emphasized[0];
+  let prevOut = emphasized[0];
+  for (let i = 1; i < offset; i++) {
+    const input = emphasized[i];
+    const out = HP_ALPHA * (prevOut + input - prevIn);
+    filtered[i] = out;
+    prevOut = out;
+    prevIn = input;
+  }
+
+  const frameCount = Math.floor((offset - SPECTRO_WINDOW) / SPECTRO_HOP) + 1;
+  if (frameCount <= 0) return null;
+
+  const powerSpectrogram = new Array(frameCount);
+  const real = new Array(SPECTRO_FFT);
+  const imag = new Array(SPECTRO_FFT);
+
+  for (let frameIdx = 0; frameIdx < frameCount; frameIdx++) {
+    const start = frameIdx * SPECTRO_HOP;
+    for (let j = 0; j < SPECTRO_FFT; j++) {
+      if (j < SPECTRO_WINDOW) {
+        real[j] = filtered[start + j] * HANN_WINDOW[j];
+      } else {
+        real[j] = 0;
+      }
+      imag[j] = 0;
+    }
+
+    fft(real, imag);
+
+    const magnitudes = new Array(SPECTRO_BINS);
+    for (let bin = 0; bin < SPECTRO_BINS; bin++) {
+      const re = real[bin];
+      const im = imag[bin];
+      // Power spectrum (magnitude squared)
+      magnitudes[bin] = re * re + im * im;
+    }
+    powerSpectrogram[frameIdx] = magnitudes;
+  }
+
+  // Convert to dB scale and whiten across frequency bins
+  const dbSpectrogram = new Array(frameCount);
+  const freqMeans = new Array(SPECTRO_BINS).fill(0);
+  for (let frameIdx = 0; frameIdx < frameCount; frameIdx++) {
+    const row = new Array(SPECTRO_BINS);
+    const magnitudes = powerSpectrogram[frameIdx];
+    for (let bin = 0; bin < SPECTRO_BINS; bin++) {
+      const power = magnitudes[bin] + 1e-12;
+      const db = 10 * Math.log(power) / LN10;
+      row[bin] = db;
+      freqMeans[bin] += db;
+    }
+    dbSpectrogram[frameIdx] = row;
+  }
+
+  for (let bin = 0; bin < SPECTRO_BINS; bin++) {
+    freqMeans[bin] /= frameCount;
+  }
+
+  for (let frameIdx = 0; frameIdx < frameCount; frameIdx++) {
+    const row = dbSpectrogram[frameIdx];
+    for (let bin = 0; bin < SPECTRO_BINS; bin++) {
+      row[bin] -= freqMeans[bin];
+    }
+  }
+
+  const startDynamicFrame = Math.max(0, frameCount - SPECTRO_ROLLING_FRAMES);
+  const exposureWindow = dbSpectrogram.slice(startDynamicFrame);
+  const exposureValues = [];
+  for (const row of exposureWindow) {
+    for (const value of row) {
+      exposureValues.push(value);
+    }
+  }
+
+  if (exposureValues.length === 0) return null;
+
+  const sortedExposure = exposureValues.slice().sort((a, b) => a - b);
+  const percentileIndex = Math.max(0, Math.min(sortedExposure.length - 1, Math.floor(sortedExposure.length * 0.99)));
+  const maxDb = sortedExposure[percentileIndex];
+  const minDb = maxDb - SPECTRO_DYNAMIC_RANGE;
+  const dbRange = Math.max(1e-6, maxDb - minDb);
+
+  const normalized = dbSpectrogram.map(row =>
+    row.map(value => {
+      const clipped = Math.min(maxDb, Math.max(minDb, value));
+      const norm = (clipped - minDb) / dbRange;
+      return Math.pow(Math.max(0, Math.min(1, norm)), SPECTRO_GAMMA);
+    })
+  );
+
+  // Spectral flux for onset highlighting
+  const flux = new Array(frameCount).fill(0);
+  for (let frameIdx = 1; frameIdx < frameCount; frameIdx++) {
+    let sum = 0;
+    const prev = powerSpectrogram[frameIdx - 1];
+    const curr = powerSpectrogram[frameIdx];
+    for (let bin = 0; bin < SPECTRO_BINS; bin++) {
+      const diff = curr[bin] - prev[bin];
+      if (diff > 0) {
+        sum += diff;
+      }
+    }
+    flux[frameIdx] = sum;
+  }
+
+  return {
+    normalized,
+    flux,
+  };
 }
 
 // Text wrapping helper
