@@ -49,20 +49,38 @@ const HP_ALPHA = (() => {
   return rc / (rc + dt);
 })();
 
-// Viridis colormap for better perceptual uniformity
-const VIRIDIS_GRADIENT = [
-  { stop: 0.0, color: [68, 1, 84] },       // Dark purple
-  { stop: 0.125, color: [71, 44, 122] },   // Purple  
-  { stop: 0.25, color: [59, 81, 139] },    // Blue-purple
-  { stop: 0.375, color: [44, 113, 142] },  // Blue-green
-  { stop: 0.5, color: [33, 144, 141] },    // Teal
-  { stop: 0.625, color: [39, 173, 129] },  // Green
-  { stop: 0.75, color: [92, 200, 99] },    // Light green
-  { stop: 0.875, color: [170, 220, 50] },  // Yellow-green
-  { stop: 1.0, color: [253, 231, 37] },    // Bright yellow
+// Diverging colormaps (approximate samples from scientific palettes)
+const COOLWARM_GRADIENT = [
+  { stop: 0.0, color: [59, 76, 192] },     // Deep blue
+  { stop: 0.25, color: [102, 139, 225] },  // Muted blue
+  { stop: 0.5, color: [221, 221, 221] },   // Neutral gray
+  { stop: 0.75, color: [229, 130, 99] },   // Warm orange
+  { stop: 1.0, color: [180, 4, 38] },      // Deep red
 ];
 
-// Magma colormap as alternative
+const PUOR_GRADIENT = [
+  { stop: 0.0, color: [45, 0, 75] },       // Rich purple
+  { stop: 0.25, color: [117, 69, 153] },   // Plum
+  { stop: 0.5, color: [247, 247, 247] },   // Soft white
+  { stop: 0.75, color: [246, 163, 96] },   // Amber
+  { stop: 1.0, color: [179, 88, 6] },      // Deep orange
+];
+
+const RDBU_R_GRADIENT = [
+  { stop: 0.0, color: [178, 24, 43] },     // Crimson
+  { stop: 0.25, color: [239, 138, 98] },   // Coral
+  { stop: 0.5, color: [247, 247, 247] },   // Neutral
+  { stop: 0.75, color: [103, 169, 207] },  // Sky blue
+  { stop: 1.0, color: [33, 102, 172] },    // Deep blue
+];
+
+const LAYER_GRADIENTS = {
+  L2: COOLWARM_GRADIENT,
+  L6: PUOR_GRADIENT,
+  L10: RDBU_R_GRADIENT,
+};
+
+// Magma colormap for spectrogram
 const MAGMA_GRADIENT = [
   { stop: 0.0, color: [0, 0, 4] },         // Black
   { stop: 0.125, color: [28, 16, 68] },    // Dark purple
@@ -402,6 +420,8 @@ function drawHeatmap(ctx, x, y, width, height, layer) {
   // Apply z-score normalization
   processedVectors = zScoreNormalize(processedVectors);
   
+  const gradient = LAYER_GRADIENTS[layer.name] || COOLWARM_GRADIENT;
+
   const n_neurons = processedVectors[0].length;
   const n_time = processedVectors.length;
   const neuronHeight = height / n_neurons;
@@ -414,7 +434,7 @@ function drawHeatmap(ctx, x, y, width, height, layer) {
       // Map z-score to [0, 1] using tanh for better contrast
       const normalizedValue = (Math.tanh(value / 2) + 1) / 2;
       
-      ctx.fillStyle = interpolateColor(VIRIDIS_GRADIENT, normalizedValue);
+      ctx.fillStyle = interpolateColor(gradient, normalizedValue);
       ctx.fillRect(
         x + t * timeWidth,
         y + n * neuronHeight,

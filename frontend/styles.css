@@ -165,15 +165,20 @@ button:hover {
 }
 
 
-.legend-dot.ridge,
-.legend-dot.ridge-l10,
-.legend-dot.ridge-l6,
+.legend-dot.ridge-l10 {
+  background: linear-gradient(135deg, #b2182b, #f7f7f7 50%, #2166ac);
+}
+
+.legend-dot.ridge-l6 {
+  background: linear-gradient(135deg, #2d004b, #f7f7f7 50%, #f1a340);
+}
+
 .legend-dot.ridge-l2 {
-  background: linear-gradient(135deg, #000083, #05ffff 55%, #fa0000 90%);
+  background: linear-gradient(135deg, #3b4cc0, #f7f7f7 50%, #b40426);
 }
 
 .legend-dot.audio {
-  background: rgba(56, 189, 248, 0.8);
+  background: linear-gradient(135deg, #000004, #cc4778 55%, #fba40a 95%);
 }
 
 .transcript-text {
